@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { ExitCode, PortleaseError } from './errors.ts';
@@ -73,6 +73,32 @@ function removeIf(file: string, expected: (text: string) => boolean): void {
   }
 }
 
+// Taking over a stale lock must not delete one that someone else just created. Reading then deleting leaves a gap,
+// so move the file aside first (atomic), check what we moved, and put it back if it was not the stale one.
+function removeStale(file: string, staleText: string): void {
+  const aside = `${file}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    renameSync(file, aside);
+  } catch {
+    return; // already gone
+  }
+  try {
+    const moved = readFileSync(aside, 'utf8');
+    // An empty file looks the same whether it is a crashed leftover or a lock being written: tell them apart by age.
+    const stillStale = moved === staleText && (moved !== '' || Date.now() - statSync(aside).mtimeMs > UNREADABLE_STALE_MS);
+    if (!stillStale) {
+      // A live (or still-being-written) lock: restore it unless a newer one already took its place.
+      try {
+        linkSync(aside, file);
+      } catch {
+        // someone else holds the lock path now
+      }
+    }
+  } finally {
+    unlinkSync(aside);
+  }
+}
+
 export async function withLock<T>(home: string, fn: () => Promise<T>, options: LockOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const retryMs = options.retryMs ?? 50;
@@ -85,7 +111,7 @@ export async function withLock<T>(home: string, fn: () => Promise<T>, options: L
     const found = inspect(file, UNREADABLE_STALE_MS);
     if (found.kind === 'gone') continue;
     if (found.kind === 'stale') {
-      removeIf(file, (text) => text === found.text);
+      removeStale(file, found.text);
       continue;
     }
     if (Date.now() >= deadline) {

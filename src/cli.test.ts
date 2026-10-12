@@ -248,6 +248,24 @@ describe('portlease release', () => {
   });
 });
 
+describe('portlease release from a deleted working directory', () => {
+  test('still succeeds, so archive scripts that run after the folder is gone work', async () => {
+    const { root, home, work } = sandbox();
+    const gone = workdir(root, 'gone');
+    await run(CLAIM, { cwd: gone, home });
+    const result = await new Promise<Run>((resolve) => {
+      execFile(
+        'sh',
+        ['-c', `cd "$G" && rm -rf "$G" && "$NODE" "$BIN" release`],
+        { cwd: work, env: { ...process.env, PORTLEASE_HOME: home, G: gone, NODE: process.execPath, BIN } },
+        (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr }),
+      );
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /Released 2 port\(s\)/);
+  });
+});
+
 describe('portlease ls', () => {
   test('lists leases by directory, marking directories that no longer exist, without cleaning up', async () => {
     const { root, home, work } = sandbox();

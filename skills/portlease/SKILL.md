@@ -127,7 +127,14 @@ Install portlease as a global tool, not as a project dependency: CI and Docker b
 
 ### Ask the user (and recommend)
 
-- **Where should the leased ports live?** One file at the root (`.env.local`) that every app and tool loads, or each app's own env file (`apps/server/.env`, `apps/web/.env`, …) plus one for tests. Recommend each app's own file when the apps already load one, because they read it with no extra code; recommend a single root file for a small repo with one or two processes. A root file means every consumer must be taught to load it (Vite `loadEnv`, `tsx --env-file`, Playwright `loadEnvFile`).
+- **Which env file should hold the leased ports?** Work this out yourself before asking, from what you know about the framework or tool that reads the port, then put one concrete recommendation and the alternatives to the user. Nothing about the choice is fixed: the file can be `.env`, `.env.local`, `.env.development.local`, `.env.test`, a custom name loaded with `--env-file`, at the repo root or inside an app, one shared file or one per app; an existing file may be updated (`claim` rewrites only the port lines it owns) or a new one added.
+
+  What to analyse:
+  - **Which files each consumer actually loads, and which wins.** Vite and Next load `.env`, `.env.local` and mode-specific variants with the more specific ones overriding; plain `dotenv` loads only `.env`; Node `--env-file` loads exactly what it is given, in order; Playwright and Docker Compose have their own rules; some tools read the process environment only. A leased value written to a file that is overridden by another (`.env.development.local` over `.env.local`) or never loaded is silently ignored: check this.
+  - **What exists and what git does with it.** List the candidate files and check `.gitignore` (`git check-ignore -v <file>`) and whether each is tracked (`git ls-files`).
+  - **The cost of each option:** loading a new file may need a code or script change in every consumer; reusing a file that is already loaded needs none.
+
+  **Recommend the option that leaves git untouched**: write only to files that are gitignored, and among those take the simplest. Modify an existing gitignored file (usually a `.env`) when the consumers already load it, because that needs no other change; add a new gitignored file (such as `.env.local`) when the existing one is shared, tracked or owned by the user's secrets, and the tool loads the new one with the right precedence. Never write ports into a tracked file: it creates a diff in every working copy, so if the best candidate is tracked, propose a new ignored file or add the entry to `.gitignore`. Say what you recommend and why in one or two sentences, and let the user choose.
 - **Which tool creates the working copies** (Orca, Conductor, Claude Code, plain `git worktree`), if the detection in the next section is not conclusive.
 - **Shared services:** whether containers such as Postgres or Redis should be one per working copy or shared on purpose.
 - **Where do the main checkout and CI run?** Default: they keep today's fixed ports and only new working copies lease.
@@ -149,7 +156,7 @@ The leases only help if every new working copy claims its ports and every remove
 
 ```sh
 #!/bin/sh
-# scripts/worktree-setup.sh — run from the new working copy's root
+# scripts/worktree-setup.sh — run from the new working copy's root (env file names below are examples: use the ones agreed with the user)
 set -eu
 main="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"   # the main checkout
 

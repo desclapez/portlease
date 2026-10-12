@@ -1,0 +1,30 @@
+{
+  "name": "portlease",
+  "version": "0.1.0",
+  "description": "Unique dev ports per directory, from a machine-wide registry, written into your .env",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/desclapez/portlease.git"
+  },
+  "bin": {
+    "portlease": "dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"src/**/*.test.ts\"",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

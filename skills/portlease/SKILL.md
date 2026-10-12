@@ -101,17 +101,15 @@ A renamed or moved directory loses its leases (they are keyed on the path): run 
 
 ## Adding portlease to a repository
 
-Do these in order. The goal: every dev/test port comes from an env file, the main checkout and CI keep fixed ports, and a new worktree swaps in leased ports automatically.
+Start from the agreed audit table. What is needed is small; everything else is a decision for the user or an optional improvement. Keep the three apart when you talk to them: do the needed part, ask about the decisions (with a recommendation), and offer the improvements one by one.
 
-1. **Start from the audit** in "Finding the ports to lease": the agreed table is the inventory. CI/Docker/production ports can stay as they are; leasing is for local dev and test.
-2. **Make every leased port come from an env variable.** Where the audit found a port in code, a script flag or a tool default (`vite --port 4000`, `storybook dev --port 6006`, a stub's `const PORT = 4012`), change it to read the agreed variable. Tools that move to another port when busy should be told not to (`strictPort`).
-3. **Commit an `.env.example` per app with the fixed values** (`WEB_PORT=4000`, …), plus an e2e one if tests need ports. Make sure the real `.env` files are in `.gitignore`. The examples are the only place with fixed ports; remove fallbacks like `process.env.PORT ?? 4000` from code and fail with a message that says which variable is missing and how to create the file. A silent fallback quietly sends a leased worktree back to the shared port.
-4. **Create the env files from the examples when missing.** A small `sh` script that copies `X.example` to `X` unless `X` exists, run from `postinstall` and also as a package script (`setup:env`) so it can be run by hand. Document it in the README. Use `#!/bin/sh`, not bash: Alpine-based Docker images have no bash, and a Dockerfile that installs before copying the sources needs the script copied first (or make the step manual).
-5. **Write one ports file per env file**, next to it, listing the names that file must hold (`apps/server/.ports`, `apps/web/.ports`, `e2e/.ports`, …). Each file lists only what its app reads, so env files stay free of ports they never use.
-6. **Create the setup and teardown scripts** as described in "Creating the setup and teardown scripts for worktrees and agents": install first (so the env files exist), then one `claim` per ports file, then the project's own preparation; `release` on teardown. An env file with real configuration that is not in git must be copied from the main checkout before the claim; `claim` then only replaces the port lines.
-   Leave the user's real, gitignored env files (the ones with secrets or local configuration) alone: change the `.env.example` and the code, and let `claim` add or replace only the port lines it owns. Renaming a variable inside a real `.env` by hand risks the secrets next to it for no benefit; mention the rename to the user instead.
-7. **Install portlease as a global tool, not as a project dependency.** CI and Docker builds should neither install nor run it: a git/tarball dependency needs `git` or network in places that have neither (an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.1.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
-8. **Verify before committing.** Use a throwaway registry so the real one stays clean:
+### Needed
+
+1. **Name each leased port after the variable the app already reads** (`PORT` stays `PORT`, `VITE_API_PORT` stays that). Add a new variable only where the port is hard-coded today (a script flag like `vite --port 4000`, a constant in a stub or config, a tool default). Dev and test/e2e ports need different names, because different names are different leases. When two apps need the same port (a web proxy pointing at the API), they need the same *name* in both ports files, so pick one name for it; an app that reads it under another name can be mapped in its script.
+2. **A ports file per env file** (see "The ports file"), listing the names that env file must hold.
+3. **Every leased port is read from the environment** by the process that opens it (and by whatever points at it, such as a proxy). Make the smallest change that gets there.
+4. **Setup and teardown scripts** that claim after the working copy exists and release when it goes away (next section).
+5. **Verify** with a throwaway registry before finishing:
 
    ```bash
    export PORTLEASE_HOME="$(mktemp -d)"
@@ -121,9 +119,25 @@ Do these in order. The goal: every dev/test port comes from an env file, the mai
    portlease ls
    ```
 
-   Then start the apps with those env files and check they listen on the leased ports, run the test suite, run `portlease release`, and delete the generated env files so the main checkout keeps the fixed ports. Restore any env file you had before (back up anything with real configuration first).
+   Start the apps with those env files and check they listen on the leased ports, run the tests, run `portlease release`, then restore the env files you had before (back up anything with real configuration first). Never `claim` in the main checkout unless the user asks: it keeps the default ports on purpose.
 
-Do not run `claim` in the main checkout unless the user asks: it keeps the default ports on purpose.
+Do not hand-edit a user's real, gitignored env file (secrets, local configuration). `claim` adds or replaces only the lines it owns; if a variable should be renamed, change the code or script and tell the user, instead of rewriting their file.
+
+Install portlease as a global tool, not as a project dependency: CI and Docker builds should neither install nor run it (a git/tarball dependency needs `git` or network where there is none; an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.1.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
+
+### Ask the user (and recommend)
+
+- **Where should the leased ports live?** One file at the root (`.env.local`) that every app and tool loads, or each app's own env file (`apps/server/.env`, `apps/web/.env`, …) plus one for tests. Recommend each app's own file when the apps already load one, because they read it with no extra code; recommend a single root file for a small repo with one or two processes. A root file means every consumer must be taught to load it (Vite `loadEnv`, `tsx --env-file`, Playwright `loadEnvFile`).
+- **Which tool creates the working copies** (Orca, Conductor, Claude Code, plain `git worktree`), if the detection in the next section is not conclusive.
+- **Shared services:** whether containers such as Postgres or Redis should be one per working copy or shared on purpose.
+- **Where do the main checkout and CI run?** Default: they keep today's fixed ports and only new working copies lease.
+
+### Propose as improvements (each optional)
+
+- **Commit an `.env.example` per env file with the fixed values**, plus a small `sh` script that creates the real file from it when missing (from `postinstall` and as a manual script such as `pnpm setup:env`, documented in the README). The examples then become the single place that lists the default ports, and a fresh clone or worktree is runnable. Use `#!/bin/sh`, not bash: Alpine-based images have no bash, and a Dockerfile that installs before copying the sources needs the script copied first (or make the step manual).
+- **Remove the fixed ports from the code** (`process.env.PORT ?? 4001`) and fail with a message naming the missing variable and how to create the file. A silent fallback quietly sends a leased working copy back to the shared port. Do this only together with the example files, so a missing file is easy to fix.
+- **Make tools that hop to the next free port refuse to** (`strictPort` in Vite), so a collision is an error instead of two servers pointing at each other.
+- **One name per shared port**, when the same port is read under different names in different places, to keep the ports files simple.
 
 ## Creating the setup and teardown scripts for worktrees and agents
 
@@ -144,10 +158,10 @@ for f in apps/server/.env; do                                     # only files w
   [ -f "$f" ] || { [ -f "$main/$f" ] && mkdir -p "$(dirname "$f")" && cp "$main/$f" "$f"; }
 done
 
-# 2. Install (also creates the other env files from their .env.example).
+# 2. Install (if the project has .env.example files and a setup-env script, this also creates the env files).
 pnpm install
 
-# 3. Lease ports: one claim per ports file / env file pair. This replaces the port lines, nothing else.
+# 3. Lease ports: one claim per ports file / env file pair (a single root file needs only one claim). This replaces the port lines, nothing else.
 portlease claim --ports apps/server/.ports --env apps/server/.env
 portlease claim --ports apps/web/.ports --env apps/web/.env
 portlease claim --ports e2e/.ports --env .env.e2e
@@ -172,7 +186,7 @@ Rules that keep these scripts correct:
 - **Plain git:** `git worktree add ../x -b feature && (cd ../x && sh scripts/worktree-setup.sh)`; before `git worktree remove`, run the teardown. Git has no hook for removal, so say so in the README and consider a small wrapper alias.
 - **Other agent environments** (Conductor, Claude Code worktrees, editor integrations): point their setup/archive (or create/remove) hook at the same two scripts. Check that tool's current documentation for the exact config key instead of guessing it, and tell the user which parts you could not verify.
 
-After writing them, run the setup script in a throwaway worktree with a temporary `PORTLEASE_HOME` (see the verification step above), check the generated env files and that `release` empties `portlease ls`, then remove the worktree.
+After writing them, run the setup script in a throwaway worktree with a temporary `PORTLEASE_HOME` (see "Verify" above), check the generated env files and that `release` empties `portlease ls`, then remove the worktree.
 
 ## Working with this tool
 

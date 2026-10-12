@@ -6,6 +6,9 @@ import { ExitCode, PortleaseError } from './errors.ts';
 
 export const LOCK_FILE = 'leases.lock';
 
+// An unreadable lock only counts as stale once it is older than this, whatever timeout one caller uses.
+const UNREADABLE_STALE_MS = 10_000;
+
 export type LockOptions = { timeoutMs?: number; retryMs?: number };
 
 type Inspection = { kind: 'gone' } | { kind: 'stale'; text: string } | { kind: 'held'; pid: number } | { kind: 'pending' };
@@ -79,7 +82,7 @@ export async function withLock<T>(home: string, fn: () => Promise<T>, options: L
   const deadline = Date.now() + timeoutMs;
 
   while (!tryAcquire(file, token)) {
-    const found = inspect(file, timeoutMs);
+    const found = inspect(file, UNREADABLE_STALE_MS);
     if (found.kind === 'gone') continue;
     if (found.kind === 'stale') {
       removeIf(file, (text) => text === found.text);

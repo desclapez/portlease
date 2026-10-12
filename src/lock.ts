@@ -23,6 +23,14 @@ function tryAcquire(file: string, token: string): boolean {
   }
   try {
     writeSync(fd, JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }));
+  } catch (error) {
+    // Do not leave an empty lock that would block everyone until it ages out.
+    try {
+      unlinkSync(file);
+    } catch {
+      // already gone
+    }
+    throw new PortleaseError(`cannot write lock ${file}: ${(error as Error).message}`, ExitCode.registry);
   } finally {
     closeSync(fd);
   }
@@ -102,7 +110,11 @@ function removeStale(file: string, staleText: string): void {
 export async function withLock<T>(home: string, fn: () => Promise<T>, options: LockOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const retryMs = options.retryMs ?? 50;
-  mkdirSync(home, { recursive: true });
+  try {
+    mkdirSync(home, { recursive: true });
+  } catch (error) {
+    throw new PortleaseError(`cannot create ${home}: ${(error as Error).message}`, ExitCode.registry);
+  }
   const file = join(home, LOCK_FILE);
   const token = randomUUID();
   const deadline = Date.now() + timeoutMs;

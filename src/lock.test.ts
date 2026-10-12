@@ -28,6 +28,30 @@ describe('withLock', () => {
     assert.equal(existsSync(home), true);
   });
 
+  test('an unusable home directory is a registry error, not a crash', async () => {
+    const file = join(tempHome(), 'file');
+    writeFileSync(file, '');
+    await assert.rejects(
+      withLock(join(file, 'nested'), async () => 1),
+      (error: unknown) => error instanceof PortleaseError && error.exitCode === ExitCode.registry,
+    );
+  });
+
+  test('several waiters over one stale lock never overlap', async () => {
+    const home = tempHome();
+    writeFileSync(join(home, LOCK_FILE), JSON.stringify({ pid: deadPid(), token: 'old', startedAt: '2026-01-01T00:00:00.000Z' }));
+    let inside = 0;
+    let overlaps = 0;
+    const work = async () => {
+      inside++;
+      if (inside > 1) overlaps++;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inside--;
+    };
+    await Promise.all(Array.from({ length: 8 }, () => withLock(home, work, { retryMs: 2 })));
+    assert.equal(overlaps, 0);
+  });
+
   test('removes the lock when the work fails', async () => {
     const home = tempHome();
     await assert.rejects(withLock(home, async () => Promise.reject(new Error('boom'))), /boom/);

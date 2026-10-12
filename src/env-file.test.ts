@@ -42,6 +42,10 @@ describe('rewriteEnv', () => {
     assert.equal(rewriteEnv('A=1\r\nAPI_PORT=4001\r\n', ports({ API_PORT: 21001 })), 'A=1\r\nAPI_PORT=21001\r\n');
   });
 
+  test('appends with CRLF when the file uses CRLF, including the newline added before them', () => {
+    assert.equal(rewriteEnv('A=1\r\nB=2', ports({ WEB_PORT: 21000 })), 'A=1\r\nB=2\r\nWEB_PORT=21000\r\n');
+  });
+
   test('leaves look-alike names untouched', () => {
     const content = 'API_PORT_OLD=1\nMY_API_PORT=2\n#API_PORT=3\n';
     assert.equal(rewriteEnv(content, ports({ API_PORT: 21001 })), `${content}API_PORT=21001\n`);
@@ -96,6 +100,16 @@ describe('writeEnvFile', () => {
     writeEnvFile(link, ports({ WEB_PORT: 21000 }));
     assert.ok(lstatSync(link).isSymbolicLink());
     assert.equal(readFileSync(target, 'utf8'), 'A=1\nWEB_PORT=21000\n');
+  });
+
+  test('writes through a dangling symlink, creating its target and keeping the link', () => {
+    const dir = tempDir();
+    const target = join(dir, 'shared.env');
+    const link = join(dir, '.env.local');
+    symlinkSync(target, link);
+    writeEnvFile(link, ports({ WEB_PORT: 21000 }));
+    assert.ok(lstatSync(link).isSymbolicLink());
+    assert.equal(readFileSync(target, 'utf8'), 'WEB_PORT=21000\n');
   });
 
   test('a file in a missing directory is an env write error that says how to recover', () => {

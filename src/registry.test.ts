@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ExitCode, PortleaseError } from './errors.ts';
@@ -69,6 +69,19 @@ describe('readRegistry', () => {
     const home = join(tempHome(), 'nested', 'portlease');
     saveRegistry(home, sample);
     assert.deepEqual(readRegistry(home, DEFAULT_RANGE), sample);
+  });
+
+  test('a failed save leaves no temp file behind', () => {
+    const home = tempHome();
+    mkdirSync(join(home, 'leases.json'));
+    assert.throws(() => saveRegistry(home, sample), registryError(/cannot save/));
+    assert.deepEqual(readdirSync(home), ['leases.json']);
+  });
+
+  test('rejects a version below 1', () => {
+    const home = tempHome();
+    writeFileSync(join(home, 'leases.json'), '{ "version": 0, "cursor": 20000, "leases": [] }');
+    assert.throws(() => readRegistry(home, DEFAULT_RANGE), registryError(/malformed/));
   });
 
   test('rejects invalid JSON', () => {

@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { ExitCode, PortleaseError } from './errors.ts';
+import { canonicalPath } from './paths.ts';
 
 export type EnvChange =
   | { kind: 'replace'; name: string; before: string; after: string }
@@ -36,8 +37,9 @@ export function rewriteEnv(content: string, values: ReadonlyMap<string, number>)
   let result = lines.join('');
   const missing = [...values].filter(([name]) => !written.has(name));
   if (missing.length > 0) {
-    if (result !== '' && !result.endsWith('\n')) result += '\n';
-    result += missing.map(([name, port]) => `${assignment(name, port, false)}\n`).join('');
+    const eol = content.includes('\r\n') ? '\r\n' : '\n';
+    if (result !== '' && !result.endsWith('\n')) result += eol;
+    result += missing.map(([name, port]) => `${assignment(name, port, false)}${eol}`).join('');
   }
   return result;
 }
@@ -70,7 +72,7 @@ export function readEnvFile(file: string): string {
 }
 
 export function writeEnvFile(file: string, values: ReadonlyMap<string, number>): void {
-  const target = existsSync(file) ? realpathSync(file) : file;
+  const target = canonicalPath(file);
   const mode = existsSync(target) ? statSync(target).mode & 0o777 : 0o644;
   const temp = `${target}.portlease-${process.pid}.tmp`;
   try {

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Range } from './allocate.ts';
 import { ExitCode, PortleaseError } from './errors.ts';
@@ -81,8 +81,8 @@ export function readRegistry(home: string, range: Range): Registry {
   const file = join(home, LEASES_FILE);
   const data = readJson(file);
   if (data === undefined) return emptyRegistry(range);
-  if (!isObject(data) || !isInteger(data.version)) {
-    throw registryError(`${file} is malformed: missing "version". Fix it, or delete it to forget every lease`);
+  if (!isObject(data) || !isInteger(data.version) || data.version < 1) {
+    throw registryError(`${file} is malformed: missing or invalid "version". Fix it, or delete it to forget every lease`);
   }
   if (data.version > REGISTRY_VERSION) {
     throw registryError(
@@ -105,6 +105,11 @@ export function saveRegistry(home: string, registry: Registry): void {
     writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`);
     renameSync(temp, file);
   } catch (error) {
+    try {
+      unlinkSync(temp);
+    } catch {
+      // the temp file was never created
+    }
     throw registryError(`cannot save ${file}: ${(error as Error).message}`);
   }
 }

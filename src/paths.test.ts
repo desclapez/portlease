@@ -34,6 +34,12 @@ describe('canonicalPath', () => {
     assert.equal(canonicalPath(link), real);
   });
 
+  test('resolves a dangling symlink to the path it pointed at', () => {
+    const { real, link } = setup();
+    symlinkSync(join(real, 'gone'), join(link, '..', 'dangling'));
+    assert.equal(canonicalPath(join(link, '..', 'dangling')), join(real, 'gone'));
+  });
+
   test('resolves a missing directory through its nearest existing ancestor', () => {
     const { real, link } = setup();
     assert.equal(canonicalPath(join(link, 'gone', 'deeper')), join(real, 'gone', 'deeper'));

@@ -120,6 +120,17 @@ describe('portlease claim', () => {
     assert.match(viaLink.stderr, new RegExp(`Leased for ${work}:`));
   });
 
+  test('a dry run through a --dir symlink reports the same leases as the real directory', async () => {
+    const { root, home, work } = sandbox();
+    const link = join(root, 'link');
+    symlinkSync(work, link);
+    const claimed = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    const result = await run([...CLAIM, '--dir', link, '--dry-run'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Dry run for ${work}:`));
+    assert.match(result.stdout, new RegExp(`WEB_PORT=${claimed.WEB_PORT} {2}existing lease`));
+  });
+
   test('concurrent claims for different directories get disjoint ports', async () => {
     const { root, home } = sandbox();
     const dirs = ['a', 'b', 'c', 'd', 'e'].map((name) => workdir(root, name));
@@ -261,6 +272,20 @@ describe('portlease release from a deleted working directory', () => {
         (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr }),
       );
     });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /Released 2 port\(s\)/);
+  });
+});
+
+describe('portlease release through a dangling symlink', () => {
+  test('frees the leases of the directory the link used to point at', async () => {
+    const { root, home, work } = sandbox();
+    const gone = workdir(root, 'gone');
+    const link = join(root, 'link');
+    symlinkSync(gone, link);
+    await run(CLAIM, { cwd: gone, home });
+    rmSync(gone, { recursive: true });
+    const result = await run(['release', '--dir', link], { cwd: work, home });
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /Released 2 port\(s\)/);
   });

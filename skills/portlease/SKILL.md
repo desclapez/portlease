@@ -108,20 +108,7 @@ Do these in order. The goal: every dev/test port comes from an env file, the mai
 3. **Commit an `.env.example` per app with the fixed values** (`WEB_PORT=4000`, …), plus an e2e one if tests need ports. Make sure the real `.env` files are in `.gitignore`. The examples are the only place with fixed ports; remove fallbacks like `process.env.PORT ?? 4000` from code and fail with a message that says which variable is missing and how to create the file. A silent fallback quietly sends a leased worktree back to the shared port.
 4. **Create the env files from the examples when missing.** A small `sh` script that copies `X.example` to `X` unless `X` exists, run from `postinstall` and also as a package script (`setup:env`) so it can be run by hand. Document it in the README. Use `#!/bin/sh`, not bash: Alpine-based Docker images have no bash, and a Dockerfile that installs before copying the sources needs the script copied first (or make the step manual).
 5. **Write one ports file per env file**, next to it, listing the names that file must hold (`apps/server/.ports`, `apps/web/.ports`, `e2e/.ports`, …). Each file lists only what its app reads, so env files stay free of ports they never use.
-6. **Wire the worktree scripts.** Install dependencies first (so the env files exist), then `claim` once per ports file, then the rest of the setup; release in archive:
-
-   ```yaml
-   scripts:
-     setup: |
-       pnpm install                      # creates the env files from the examples
-       portlease claim --ports apps/server/.ports --env apps/server/.env
-       portlease claim --ports apps/web/.ports --env apps/web/.env
-       portlease claim --ports e2e/.ports --env .env.e2e
-     archive: |
-       portlease release
-   ```
-
-   If the setup runs on a different Node than the project pins, switch first (`nvm use`), because a global package lives under one Node version. An env file that holds real configuration which is not in git (database URL, keys) must be copied from the main checkout before the claim (Orca: list it in `.worktreeinclude`); `claim` then only replaces the port lines.
+6. **Create the setup and teardown scripts** as described in "Creating the setup and teardown scripts for worktrees and agents": install first (so the env files exist), then one `claim` per ports file, then the project's own preparation; `release` on teardown. An env file with real configuration that is not in git must be copied from the main checkout before the claim; `claim` then only replaces the port lines.
 7. **Install portlease as a global tool, not as a project dependency.** CI and Docker builds should neither install nor run it: a git/tarball dependency needs `git` or network in places that have neither (an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.1.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
 8. **Verify before committing.** Use a throwaway registry so the real one stays clean:
 
@@ -136,6 +123,55 @@ Do these in order. The goal: every dev/test port comes from an env file, the mai
    Then start the apps with those env files and check they listen on the leased ports, run the test suite, run `portlease release`, and delete the generated env files so the main checkout keeps the fixed ports. Restore any env file you had before (back up anything with real configuration first).
 
 Do not run `claim` in the main checkout unless the user asks: it keeps the default ports on purpose.
+
+## Creating the setup and teardown scripts for worktrees and agents
+
+The leases only help if every new working copy claims its ports and every removed one releases them. Write the scripts for the environment the user actually has, and ask when you cannot tell.
+
+**Detect the environment.** `git worktree list` (where do the worktrees live?), and look for `orca.yaml` / `.worktreeinclude` (Orca), `conductor.json` (Conductor), `.claude/` and `CLAUDE.md` (Claude Code), other agent or IDE config, an existing `scripts/` convention, and how the project is installed (`pnpm`, `npm`, `uv`, …). Several can coexist. Do not assume one; if it is not clear which tool creates the working copies, ask.
+
+**Keep the logic in one tool-agnostic script, and wire each tool to it.** That way plain `git worktree add`, Orca, and an agent that creates its own worktree all behave the same:
+
+```sh
+#!/bin/sh
+# scripts/worktree-setup.sh — run from the new working copy's root
+set -eu
+main="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"   # the main checkout
+
+# 1. Config that is not in git: copy it from the main checkout if it is missing here.
+for f in apps/server/.env; do                                     # only files with real configuration
+  [ -f "$f" ] || { [ -f "$main/$f" ] && mkdir -p "$(dirname "$f")" && cp "$main/$f" "$f"; }
+done
+
+# 2. Install (also creates the other env files from their .env.example).
+pnpm install
+
+# 3. Lease ports: one claim per ports file / env file pair. This replaces the port lines, nothing else.
+portlease claim --ports apps/server/.ports --env apps/server/.env
+portlease claim --ports apps/web/.ports --env apps/web/.env
+portlease claim --ports e2e/.ports --env .env.e2e
+
+# 4. Project-specific preparation (code generation, migrations, ...)
+```
+
+```sh
+#!/bin/sh
+# scripts/worktree-teardown.sh — release every lease of this working copy
+portlease release
+```
+
+Rules that keep these scripts correct:
+- Run `claim` after the install and after any copy of an env file, because both can bring fixed example ports back; `claim` then overwrites exactly the names in the ports files.
+- Never run them in the main checkout (it keeps the fixed ports), so guard with a check if the tool can run them there: `[ "$(git rev-parse --show-toplevel)" = "$main" ] && exit 0`.
+- `release` must not depend on anything inside the working copy that may already be gone; it is safe to run twice, and `portlease release --dir <path>` works for a path that no longer exists.
+- If the environment switches Node versions or the shell is not the user's login shell (agent terminals often are not), load the version manager and switch first, because global packages such as portlease live under one Node version.
+
+**Wire the tool.**
+- **Orca** (`orca.yaml`): `scripts.setup: sh scripts/worktree-setup.sh` and `scripts.archive: sh scripts/worktree-teardown.sh`; list gitignored files that must be copied in `.worktreeinclude`.
+- **Plain git:** `git worktree add ../x -b feature && (cd ../x && sh scripts/worktree-setup.sh)`; before `git worktree remove`, run the teardown. Git has no hook for removal, so say so in the README and consider a small wrapper alias.
+- **Other agent environments** (Conductor, Claude Code worktrees, editor integrations): point their setup/archive (or create/remove) hook at the same two scripts. Check that tool's current documentation for the exact config key instead of guessing it, and tell the user which parts you could not verify.
+
+After writing them, run the setup script in a throwaway worktree with a temporary `PORTLEASE_HOME` (see the verification step above), check the generated env files and that `release` empties `portlease ls`, then remove the worktree.
 
 ## Working with this tool
 

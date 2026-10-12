@@ -58,6 +58,10 @@ scripts:
 
 The main checkout does not need to claim anything; it keeps your apps' default ports.
 
+## Agent skill
+
+`skills/portlease/SKILL.md` teaches a coding agent how to use portlease (commands, ports file, env file behavior, exit codes). To use it with Claude Code, copy the folder into `~/.claude/skills/` (or a project's `.claude/skills/`).
+
 ## Renamed or moved directories
 
 Leases are keyed on the directory's path. After renaming or moving a directory, run `portlease claim` again in it: it gets new ports and its env file is rewritten.

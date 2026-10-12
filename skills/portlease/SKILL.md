@@ -1,6 +1,6 @@
 ---
 name: portlease
-description: Lease unique dev ports per directory (git worktree, checkout, project) from a machine-wide registry and write them into .env files with the `portlease` CLI. Use whenever the user mentions port collisions between worktrees or projects, a `.ports` file, `portlease`, giving each worktree or agent its own ports, Orca setup/archive scripts that need ports, or ports in a `.env` that must not clash — even if they do not name the tool.
+description: Find every port a project opens during development and testing and lease them with the `portlease` CLI, so that parallel agents, worktrees, features or other projects on the same machine never collide. Use whenever the user mentions port collisions or "address already in use", running several agents/worktrees/branches of one project at once, a `.ports` file or `portlease`, or asks to audit a project's env files and dev/test scripts for ports — even if they do not name the tool.
 ---
 
 # portlease
@@ -8,6 +8,23 @@ description: Lease unique dev ports per directory (git worktree, checkout, proje
 `portlease` hands out one unique port per (directory, variable name) from a registry shared by the whole machine, and writes the ports into an env file. Several worktrees of one project, or several projects, can then run dev servers at the same time without colliding. Applications never call it: they only read their environment.
 
 Use it from whatever creates and destroys a working copy (Orca `setup` / `archive` scripts, a shell script, by hand).
+
+## What this skill is for
+
+An agent working on a project starts dev servers, test runners, stubs and tools. Each one opens a port. If every checkout of the project uses the same fixed ports, a second agent, another feature branch in a worktree, or an unrelated project that likes the same numbers will fail with "address already in use" or, worse, silently talk to the wrong server. portlease gives each directory its own ports; this skill's job is to **find all the ports that can collide, and then lease them**.
+
+## Finding the ports to lease
+
+Do an audit before changing anything. The goal is every port that a flow an agent could run would open: dev, build preview, unit/integration/e2e tests, Storybook or docs, database and service containers, proxies and stubs, debuggers.
+
+1. **Find the env files.** `find . -name ".env*" -not -path "*/node_modules/*"` and note which are committed examples, which are gitignored, and which app reads each (a `.env` next to a `package.json`, `--env-file` flags, `dotenv` calls, framework conventions). Read every `*PORT*`, `*_URL`/`HOST` value that contains `localhost:<port>`.
+2. **Read the places that start things.** Scripts in `package.json`/`Makefile`/`Procfile`/`justfile`/`scripts/`; `docker-compose*.yml` (host side of `ports:`); CI-only files are out of scope except to learn what the e2e expects; config files of the tools that serve or test (`vite.config.*`, `webpack*`, `next.config.*`, `playwright.config.*`, `cypress.config.*`, `vitest/jest` configs, `.storybook/`, framework configs); test setup files; stubs, mocks and proxies in `e2e/`, `tools/`, `test/`; READMEs and docs that list ports.
+3. **Look for what is not written down.** Framework defaults that no file mentions are the most dangerous, because they collide silently: Next/Nuxt/Docusaurus 3000, Vite 5173 (and its HMR socket), webpack-dev-server 8080, Angular 4200, Astro 4321, Parcel 1234, Metro/Expo 8081, Storybook 6006, Prisma Studio 5555, Node `--inspect` 9229, Vitest UI, Playwright UI/report servers, Jupyter 8888, MailHog 1025/8025, local Postgres/MySQL/Redis containers. Also note tools that move to the next free port when theirs is busy (Vite does unless `strictPort`): that hides a collision until two servers point at each other.
+4. **Check against reality when you can.** Start the dev and test flows (or read their logs) and run `lsof -nP -iTCP -sTCP:LISTEN` to see what actually opens a port, including children of the scripts. Anything the static read missed shows up here. Ask before running something heavy or with side effects.
+5. **Classify each port.** Leave alone: ports the OS assigns (`listen(0)`, tests that pick a free port themselves), production/CI-only ports, and ports of services shared on purpose across checkouts. Lease: everything fixed that a dev, test or tooling flow opens in the project checkout.
+6. **Report before editing.** Give the user a table: port, process, flow (dev/test/e2e/tooling), where it is defined (file:line), how it collides (same project in another checkout, or a likely clash with other projects), and the name you propose. Wait for agreement, then apply.
+
+Naming rules that follow from the leases: dev and e2e/test ports need different names (different names are different leases); a port two apps share (a web proxy targeting the API) gets the same name in both apps' ports files; use the variable the app already reads when there is one.
 
 ## Commands
 
@@ -86,8 +103,8 @@ A renamed or moved directory loses its leases (they are keyed on the path): run 
 
 Do these in order. The goal: every dev/test port comes from an env file, the main checkout and CI keep fixed ports, and a new worktree swaps in leased ports automatically.
 
-1. **Inventory the fixed ports.** Search the code, scripts, configs and docs for hard-coded ports (`grep -rnE "localhost:[0-9]{4}|--port [0-9]+|PORT"`). Group them by the process that opens them (API, web dev server, proxy, Storybook, e2e servers and stubs). CI/Docker/production ports can stay as they are; leasing is for local dev and test.
-2. **Pick one name per port, and read that name.** Use the variable the app already reads when there is one; otherwise add one (`API_PORT`, `WEB_PORT`, `E2E_API_PORT`, …). Dev and e2e ports need different names so they get different leases. A port two apps share (the API port a web proxy points at) gets the same name in both apps' files.
+1. **Start from the audit** in "Finding the ports to lease": the agreed table is the inventory. CI/Docker/production ports can stay as they are; leasing is for local dev and test.
+2. **Make every leased port come from an env variable.** Where the audit found a port in code, a script flag or a tool default (`vite --port 4000`, `storybook dev --port 6006`, a stub's `const PORT = 4012`), change it to read the agreed variable. Tools that move to another port when busy should be told not to (`strictPort`).
 3. **Commit an `.env.example` per app with the fixed values** (`WEB_PORT=4000`, …), plus an e2e one if tests need ports. Make sure the real `.env` files are in `.gitignore`. The examples are the only place with fixed ports; remove fallbacks like `process.env.PORT ?? 4000` from code and fail with a message that says which variable is missing and how to create the file. A silent fallback quietly sends a leased worktree back to the shared port.
 4. **Create the env files from the examples when missing.** A small `sh` script that copies `X.example` to `X` unless `X` exists, run from `postinstall` and also as a package script (`setup:env`) so it can be run by hand. Document it in the README. Use `#!/bin/sh`, not bash: Alpine-based Docker images have no bash, and a Dockerfile that installs before copying the sources needs the script copied first (or make the step manual).
 5. **Write one ports file per env file**, next to it, listing the names that file must hold (`apps/server/.ports`, `apps/web/.ports`, `e2e/.ports`, …). Each file lists only what its app reads, so env files stay free of ports they never use.

@@ -1,8 +1,21 @@
 {
   "name": "portlease",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unique dev ports per directory, from a machine-wide registry, written into your .env",
   "license": "MIT",
+  "keywords": [
+    "ports",
+    "port-allocation",
+    "dev-server",
+    "env",
+    "git-worktree",
+    "ai-agents",
+    "cli"
+  ],
+  "homepage": "https://github.com/desclapez/portlease#readme",
+  "bugs": {
+    "url": "https://github.com/desclapez/portlease/issues"
+  },
   "type": "module",
   "repository": {
     "type": "git",

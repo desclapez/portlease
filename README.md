@@ -9,18 +9,16 @@ Several working copies of a project (git worktrees, one per AI agent) and severa
 Needs Node 24 or newer.
 
 ```bash
-npm i -g github:desclapez/portlease#v0.2.0
+npm i -g portlease
 ```
-
-npm downloads the repo, compiles it, and installs the result. It takes a few seconds.
 
 Try it without installing:
 
 ```bash
-npx github:desclapez/portlease#v0.2.0 claim --dry-run
+npx portlease claim --dry-run
 ```
 
-**nvm users:** global packages are per Node version. Add `github:desclapez/portlease#v0.2.0` to `$NVM_DIR/default-packages` so every Node version you install gets it, and install it at least on nvm's default version.
+**nvm users:** global packages are per Node version. Add `portlease` to `$NVM_DIR/default-packages` so every Node version you install gets it, and install it at least on nvm's default version.
 
 ## Usage
 

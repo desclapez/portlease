@@ -147,7 +147,7 @@ Start from the agreed audit table. What is needed is small; everything else is a
 
 Do not hand-edit a user's real, gitignored env file (secrets, local configuration). `claim` adds or replaces only the lines it owns; if a variable should be renamed, change the code or script and tell the user, instead of rewriting their file.
 
-Install portlease as a global tool, not as a project dependency: CI and Docker builds should neither install nor run it (a git/tarball dependency needs `git` or network where there is none; an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.2.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
+Install portlease as a global tool, not as a project dependency: CI and Docker builds should neither install nor run it (a dependency needs the network where there is none; an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g portlease` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
 
 ### Ask the user (and recommend)
 
@@ -223,4 +223,4 @@ After writing them, run the setup script in a throwaway worktree with a temporar
 - Check `portlease --help` and `portlease claim --dry-run` before changing a setup script: the dry run prints the ports it would assign, the leases it would release, and the lines it would change or add in each env file.
 - On any port collision, run `portlease scan` before anything else (see "When a port collides").
 - Do not invent or hard-code ports for a worktree that is supposed to be leased; ask `portlease ls` or read the env file `claim` wrote.
-- Install: `npm i -g github:desclapez/portlease#v0.2.0`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").
+- Install: `npm i -g portlease`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").

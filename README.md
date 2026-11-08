@@ -147,6 +147,15 @@ npm run typecheck
 npm link           # put your checkout on PATH as `portlease`
 ```
 
+### Releasing
+
+Bump the version in a PR (`npm version patch --no-git-tag-version`, or `minor`) and merge it. Then, from an up-to-date `main` with `nvm use` and `npm login` done:
+
+```bash
+npm run release -- --dry-run   # checks, tests and the package contents; publishes nothing
+npm run release                # publishes (npm asks for the 2FA code), waits for npm, tags `vX.Y.Z` and pushes the tag
+```
+
 ## License
 
 MIT

@@ -50,7 +50,7 @@ portlease scan 20017        # who holds this one port
 
 - Finds `.portlease` in the current directory or the nearest parent, up to the repository root (the first directory with a `.git`), and leases for the directory that holds it. Running `claim` from `apps/web` is the same as running it from the root, and a worktree nested inside another checkout never picks up that checkout's file. `--dir <dir>` starts the search from another directory.
 - **The same name in several sections is one lease**, so one port, written to each of those env files. Different names are always different ports.
-- **Every env file listed must exist.** If one is missing, `claim` fails before leasing anything and names the file: create it first (for example from its `.env.example`). This keeps a setup script that claims too early from producing an env file that holds only ports.
+- **A missing env file is created** with just the ports, and `claim` says so on stderr (`Created apps/web/.env`). The directory must exist: a section whose directory is missing fails before anything is leased, because it is almost always a typo. Files that already exist only get their port lines changed, so a project that builds its env files from a template should create them before running `claim`.
 - Writes each env file with only its section's names. Only those lines change: `NAME=…` and `export NAME=…` lines get the leased value, missing names are appended, and every other line, comment and blank line stays as it is. Values already in the file are always overwritten: the registry is the source of truth.
 - Is idempotent: run it again and you get the same ports, written again. Use it to repair an env file you regenerated.
 - A name removed from `.portlease` is released on the next `claim` (`Released NAME=port` on stderr). Its line stays in the env file.
@@ -131,7 +131,7 @@ Leases are keyed on the directory's path. After renaming or moving a directory, 
 | Code | Meaning |
 |---|---|
 | 0 | Success (for `scan`: it ran, whatever it found) |
-| 1 | Usage error (unknown command or option, no `.portlease` found, invalid `.portlease`, a listed env file does not exist, invalid port, `scan` on Windows), or an unexpected error |
+| 1 | Usage error (unknown command or option, no `.portlease` found, invalid `.portlease`, a listed env file's directory does not exist, invalid port, `scan` on Windows), or an unexpected error |
 | 2 | No free port left in the range |
 | 3 | Registry problem (unreadable, invalid, or written by a newer portlease) |
 | 4 | The registry stayed locked for more than 10 seconds |

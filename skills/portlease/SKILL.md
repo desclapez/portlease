@@ -61,7 +61,7 @@ E2E_WEB_PORT
 
 ## What `claim` does to the env files
 
-- **Every env file listed must already exist.** A missing one is a usage error (exit 1) before anything is leased, naming the file; create it first (from its `.env.example`, by the install, or by copying it). So the setup order "claim after the install and after any env copy" is enforced.
+- **A missing env file is created** with just the ports (stderr: `Created <file>`). Its directory must exist, otherwise it is a usage error (exit 1) before anything is leased. If a project builds its env files from a template (`.env.example`), run `claim` after that step: `claim` only changes the port lines of an existing file, and a file it created first would not get the template's other settings.
 - Writes each env file with only its own section's names.
 - Replaces every `NAME=…` / `export NAME=…` line for a listed name with `NAME=port` (the old value and inline comments on that line are dropped), and appends names that are missing.
 - Leaves every other line byte for byte, keeps CRLF, keeps the file mode (a new file gets 0644), and writes through a symlinked env file.
@@ -118,7 +118,7 @@ Never kill a process that belongs to another working copy or project without ask
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 1 | Usage error: unknown command or option, no `.portlease` found, invalid `.portlease`, a listed env file does not exist, `--dir` not a directory, invalid port for `scan`, `scan` on Windows | Read the message; it names the file and line. Create a missing env file before claiming |
+| 1 | Usage error: unknown command or option, no `.portlease` found, invalid `.portlease`, a listed env file's directory does not exist, `--dir` not a directory, invalid port for `scan`, `scan` on Windows | Read the message; it names the file and line. Create a missing directory before claiming |
 | 2 | Range exhausted | `portlease ls` to see who holds ports, release stale ones, or widen the range |
 | 3 | Registry problem (unreadable, invalid, or written by a newer portlease) | Fix or delete `leases.json` (deleting forgets every lease), or upgrade portlease |
 | 4 | Registry locked for over 10 s | If no portlease is running, delete `leases.lock` |
@@ -193,7 +193,7 @@ done
 pnpm install
 
 # 3. Lease ports for every env file listed in .portlease. This replaces the port lines, nothing else.
-#    It fails if a listed env file does not exist yet, so it must come after the steps that create them.
+#    It creates a missing env file with only the ports, so run it after any step that builds the env files from a template.
 portlease claim
 
 # 4. Project-specific preparation (code generation, migrations, ...)

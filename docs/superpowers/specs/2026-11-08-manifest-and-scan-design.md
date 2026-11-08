@@ -1,6 +1,6 @@
 # One manifest per project, and `portlease scan`
 
-Date: 2026-11-08 · Status: draft, waiting for approval
+Date: 2026-11-08 · Status: approved
 
 ## Why
 
@@ -71,8 +71,8 @@ Rules:
 ### `portlease claim [--dir <dir>] [--dry-run]`
 
 1. Read and validate `.portlease`.
-2. Check that every env file listed exists. If any is missing, exit 1 before touching the registry, listing every missing file: "`apps/web/.env` does not exist: create it before leasing ports (for example from its `.env.example`)". **Missing env file** is now an error, not a new file. Reason: a setup script that claims before the project creates its env files would otherwise get a file with only ports, and a "copy the example if missing" step then skips it. *(My call, recommended to the user and not yet confirmed: see "Open for the user".)*
-3. Under the registry lock: lease every distinct name (existing leases reused, as today) and **release leases of this directory whose name is no longer in `.portlease`**. *(My call: with one file per project, portlease now knows the full set of names for a directory, so a renamed or removed variable frees its port instead of holding it until `release`. Env files are not touched for removed names.)*
+2. Check that every env file listed exists. If any is missing, exit 1 before touching the registry, listing every missing file: "`apps/web/.env` does not exist: create it before leasing ports (for example from its `.env.example`)". **Missing env file** is now an error, not a new file. Reason: a setup script that claims before the project creates its env files would otherwise get a file with only ports, and a "copy the example if missing" step then skips it. Decided with the user.
+3. Under the registry lock: lease every distinct name (existing leases reused, as today) and **release leases of this directory whose name is no longer in `.portlease`**. *(My call, approved: with one file per project, portlease now knows the full set of names for a directory, so a renamed or removed variable frees its port instead of holding it until `release`. Env files are not touched for removed names.)*
 4. Write each env file with only its section's names, using today's rewrite rules (replace `NAME=` / `export NAME=` lines, append missing ones, keep everything else byte for byte).
 5. Output: `Leased for <dir>:` on stderr, then `NAME=port` lines on stdout, one per distinct name, in the order of first appearance in `.portlease`. If names were released in step 3, add `Released NAME=port` lines on stderr.
 
@@ -125,7 +125,7 @@ Listeners outside the range that belong to no leased directory are not shown. Th
 
 **`--json`**: an array of entries `{ port, lease: { dir, name } | null, listener: { pid, command, cwd } | null, status }`, `status` one of `free`, `ok`, `held-by-other`, `not-leased`, `unleased-in-range`. *(Builder's call on field names.)*
 
-**Exit code** 0 whenever the scan ran, warnings or not. *(My call: scan is a report; a script or agent reads `--json`.)*
+**Exit code** 0 whenever the scan ran, warnings or not. *(My call, approved: scan is a report; a script or agent reads `--json`.)*
 
 ### Without lsof, or unsupported platforms
 
@@ -164,6 +164,3 @@ Version `0.2.0` (breaking: the `--ports` / `--env` form is gone). Tag `v0.2.0`; 
 
 Module split, error message wording beyond what is quoted, `--json` field names, how the scan output aligns columns, test fixtures.
 
-## Open for the user
-
-- **Missing env file:** refuse (recommended, written above) or create it as today?

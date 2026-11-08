@@ -97,4 +97,22 @@ describe('listListeners', () => {
     assert.equal(listeners?.[0]?.cwd?.endsWith('/tmp'), true);
     assert.equal(listeners?.[0]?.cwd?.includes('..'), false);
   });
+
+  test('a MainThread command becomes the executable name', async () => {
+    const run: RunLsof = async (args) => (args.includes('cwd') ? 'p42\nfcwd\nn/tmp\n' : 'p42\ncMainThread\nn*:20017\n');
+    const listeners = await listListeners(run, async () => '/usr/local/bin/node');
+    assert.equal(listeners?.[0]?.command, 'node');
+  });
+
+  test('MainThread stays when the executable cannot be read', async () => {
+    const run: RunLsof = async (args) => (args.includes('cwd') ? '' : 'p42\ncMainThread\nn*:20017\n');
+    const listeners = await listListeners(run, async () => null);
+    assert.equal(listeners?.[0]?.command, 'MainThread');
+  });
+
+  test('other commands never touch /proc', async () => {
+    const run: RunLsof = async (args) => (args.includes('cwd') ? '' : 'p42\ncpython3\nn*:20017\n');
+    const listeners = await listListeners(run, async () => assert.fail('readExe should not be called'));
+    assert.equal(listeners?.[0]?.command, 'python3');
+  });
 });

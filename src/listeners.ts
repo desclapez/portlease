@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { readlink } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { canonicalPath } from './paths.ts';
 
 export type Listener = { port: number; pid: number; command: string; cwd: string | null };
@@ -65,7 +67,23 @@ export const defaultRunLsof: RunLsof = (args) =>
     });
   });
 
-export async function listListeners(runLsof: RunLsof = defaultRunLsof): Promise<Listener[] | null> {
+// Path of the executable behind a pid, or null when it cannot be read (not Linux, another user, gone).
+export type ReadExe = (pid: number) => Promise<string | null>;
+
+export const defaultReadExe: ReadExe = (pid) => readlink(`/proc/${pid}/exe`).catch(() => null);
+
+// Node 24 on Linux names its main thread "MainThread", and lsof reports the thread name as the command.
+// The executable name is what the user recognises.
+async function realCommand(command: string, pid: number, readExe: ReadExe): Promise<string> {
+  if (command !== 'MainThread') return command;
+  const exe = await readExe(pid);
+  return exe === null ? command : basename(exe.replace(/ \(deleted\)$/, ''));
+}
+
+export async function listListeners(
+  runLsof: RunLsof = defaultRunLsof,
+  readExe: ReadExe = defaultReadExe,
+): Promise<Listener[] | null> {
   const output = await runLsof(['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pcn']);
   if (output === null) return null;
   const listening = parseListening(output);
@@ -73,8 +91,14 @@ export async function listListeners(runLsof: RunLsof = defaultRunLsof): Promise<
 
   const pids = [...new Set(listening.map((listener) => listener.pid))].sort((a, b) => a - b);
   const cwds = parseCwds((await runLsof(['-a', '-p', pids.join(','), '-d', 'cwd', '-F', 'pn'])) ?? '');
-  return listening.map((listener) => {
-    const cwd = cwds.get(listener.pid);
-    return { ...listener, cwd: cwd === undefined ? null : canonicalPath(cwd) };
-  });
+  return Promise.all(
+    listening.map(async (listener) => {
+      const cwd = cwds.get(listener.pid);
+      return {
+        ...listener,
+        command: await realCommand(listener.command, listener.pid, readExe),
+        cwd: cwd === undefined ? null : canonicalPath(cwd),
+      };
+    }),
+  );
 }

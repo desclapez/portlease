@@ -3,8 +3,8 @@ import type { Range } from './allocate.ts';
 import type { Listener } from './listeners.ts';
 import type { Lease } from './registry.ts';
 
-// `unleased` only answers `scan <port>` about a port nothing else reports; `in-use` only comes from the
-// fallback without lsof.
+// `unleased` only answers `scan <port>` about a port nothing else reports; `in-use` is set by the CLI for a
+// port that a bind probe finds busy while lsof shows no listener (or without lsof at all), never by `classify`.
 export type ScanStatus = 'free' | 'ok' | 'held-by-other' | 'not-leased' | 'unleased-in-range' | 'unleased' | 'in-use';
 
 export type ScanEntry = {

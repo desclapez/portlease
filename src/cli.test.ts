@@ -575,6 +575,55 @@ describe('portlease scan', () => {
     assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), envBefore);
   });
 
+  test('a leased port that is busy but invisible to lsof is not reported free', async (t) => {
+    const { home, work } = sandbox();
+    const ports = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(ports.WEB_PORT, '127.0.0.1', () => resolve()));
+    t.after(() => server.close());
+    let stdout = '';
+    const io: Io = {
+      stdout: (text) => {
+        stdout += text;
+      },
+      stderr: () => {},
+      cwd: work,
+      env: { PORTLEASE_HOME: home },
+      platform: process.platform,
+      listListeners: async () => [],
+    };
+    assert.equal(await main(['scan'], io), 0);
+    assert.match(stdout, new RegExp(`WEB_PORT=${ports.WEB_PORT}\\s+⚠ in use, holder not visible`));
+    assert.match(stdout, new RegExp(`API_PORT=${ports.API_PORT}\\s+free`));
+    stdout = '';
+    assert.equal(await main(['scan', '--json'], io), 0);
+    const statuses = Object.fromEntries(
+      (JSON.parse(stdout) as Array<{ lease: { name: string }; status: string }>).map((entry) => [entry.lease.name, entry.status]),
+    );
+    assert.deepEqual(statuses, { WEB_PORT: 'in-use', API_PORT: 'free' });
+  });
+
+  test('scan <port> on a busy port invisible to lsof says it is in use', async (t) => {
+    const { home, work } = sandbox();
+    const port = await freePort();
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
+    t.after(() => server.close());
+    let stdout = '';
+    const io: Io = {
+      stdout: (text) => {
+        stdout += text;
+      },
+      stderr: () => {},
+      cwd: work,
+      env: { PORTLEASE_HOME: home },
+      platform: process.platform,
+      listListeners: async () => [],
+    };
+    assert.equal(await main(['scan', String(port)], io), 0);
+    assert.match(stdout, new RegExp(`^${port}: in use, not leased \\(holder not visible`, 'm'));
+  });
+
   test('is not supported on Windows', async () => {
     const { home, work } = sandbox();
     let stderr = '';

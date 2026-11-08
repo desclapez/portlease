@@ -229,14 +229,32 @@ async function probeLeases(leases: Lease[], port: number | undefined): Promise<S
   return entries;
 }
 
-function formatScan(entries: ScanEntry[], port: number | undefined): string {
+// lsof lists no socket of a process it cannot inspect (another user, root, Docker's proxy on Linux),
+// so a port it shows no listener for is only free if a bind probe agrees.
+async function confirmFree(entries: ScanEntry[], port: number | undefined): Promise<ScanEntry[]> {
+  const confirmed: ScanEntry[] = [];
+  for (const entry of entries) {
+    const busy = entry.status === 'free' && !(await isPortFree(entry.port));
+    confirmed.push(busy ? { ...entry, status: 'in-use' } : entry);
+  }
+  if (port !== undefined && confirmed.length === 0 && !(await isPortFree(port))) {
+    confirmed.push({ port, lease: null, listener: null, ownerDir: null, status: 'in-use' });
+  }
+  return confirmed;
+}
+
+const invisibleHolder = (port: number) =>
+  `holder not visible to lsof: another user or root. Try: sudo lsof -nP -iTCP:${port} -sTCP:LISTEN`;
+
+function formatScan(entries: ScanEntry[], port: number | undefined, lsofAvailable: boolean): string {
   if (entries.length === 0) return port === undefined ? 'No leases.\n' : `${port}: free, not leased\n`;
   const unrelated = entries.filter((entry) => entry.status === 'unleased' || (entry.status === 'in-use' && !entry.lease));
   if (unrelated.length > 0) {
     return unrelated
-      .map(({ listener }) =>
-        listener ? `${port}: ${describeListener(listener)} ${whereFrom(listener.cwd)}, not leased\n` : `${port}: in use, not leased\n`,
-      )
+      .map(({ listener }) => {
+        if (listener) return `${port}: ${describeListener(listener)} ${whereFrom(listener.cwd)}, not leased\n`;
+        return lsofAvailable ? `${port}: in use, not leased (${invisibleHolder(port as number)})\n` : `${port}: in use, not leased\n`;
+      })
       .join('');
   }
 
@@ -256,7 +274,9 @@ function formatScan(entries: ScanEntry[], port: number | undefined): string {
       if (entry.status === 'ok' && listener) lines.push(line(entry, `listening ${describeListener(listener)} (this directory)`));
       else if (entry.status === 'held-by-other' && listener) {
         lines.push(line(entry, `⚠ held by ${describeListener(listener)} ${whereFrom(listener.cwd)}`));
-      } else lines.push(line(entry, entry.status === 'in-use' ? 'in use' : 'free'));
+      } else if (entry.status === 'in-use') {
+        lines.push(line(entry, lsofAvailable ? `⚠ in use, ${invisibleHolder(entry.port)}` : 'in use'));
+      } else lines.push(line(entry, 'free'));
     }
     const notLeased = entries.filter((item) => item.status === 'not-leased' && item.ownerDir === dir);
     for (const entry of notLeased) {
@@ -294,10 +314,10 @@ async function scan(args: string[], io: Io): Promise<number> {
     io.stderr('lsof not available: showing only whether leased ports are in use, not who holds them\n');
     entries = await probeLeases(leases, port);
   } else {
-    entries = classify({ leases, listeners, range, ...(port === undefined ? {} : { port }) });
+    entries = await confirmFree(classify({ leases, listeners, range, ...(port === undefined ? {} : { port }) }), port);
   }
 
-  io.stdout(values.json ? `${JSON.stringify(entries, null, 2)}\n` : formatScan(entries, port));
+  io.stdout(values.json ? `${JSON.stringify(entries, null, 2)}\n` : formatScan(entries, port, listeners !== null));
   return ExitCode.ok;
 }
 

@@ -50,7 +50,7 @@ portlease scan 20017        # who holds this one port
 
 ### `claim`
 
-- Finds `.portlease` in the current directory or the nearest parent, and leases for the directory that holds it. Running `claim` from `apps/web` is the same as running it from the root. `--dir <dir>` starts the search from another directory.
+- Finds `.portlease` in the current directory or the nearest parent, up to the repository root (the first directory with a `.git`), and leases for the directory that holds it. Running `claim` from `apps/web` is the same as running it from the root, and a worktree nested inside another checkout never picks up that checkout's file. `--dir <dir>` starts the search from another directory.
 - **The same name in several sections is one lease**, so one port, written to each of those env files. Different names are always different ports.
 - **Every env file listed must exist.** If one is missing, `claim` fails before leasing anything and names the file: create it first (for example from its `.env.example`). This keeps a setup script that claims too early from producing an env file that holds only ports.
 - Writes each env file with only its section's names. Only those lines change: `NAME=…` and `export NAME=…` lines get the leased value, missing names are appended, and every other line, comment and blank line stays as it is. Values already in the file are always overwritten: the registry is the source of truth.
@@ -85,13 +85,15 @@ Unleased in range
 |---|---|---|
 | Leased port, nobody listening | `free` | `free` |
 | Leased port, listener started from the lease's directory | `listening <cmd> <pid> (this directory)` | `ok` |
-| Leased port, listener from anywhere else (another copy, another project, or a directory lsof cannot see) | `⚠ held by <cmd> <pid> (<dir>)` | `held-by-other` |
+| Leased port, listener from anywhere else (another copy, another project, or a process whose directory lsof cannot read: `unknown directory`) | `⚠ held by <cmd> <pid> (<dir>)` | `held-by-other` |
+| Leased port busy, but lsof shows no listener (a process of another user or root, such as Docker's proxy on Linux) | `⚠ in use, holder not visible to lsof …` with a `sudo lsof` command to find it | `in-use` |
 | A leased directory listening on a port it has not leased (any number): the copy is not using its leases | `⚠ <port> … not leased`, with the `claim` command to run | `not-leased` |
 | A listener inside the lease range that belongs to no leased directory | `Unleased in range` group | `unleased-in-range` |
 
 - Listeners outside the range that belong to no leased directory are not shown, so system services (AirPlay, Docker, databases) stay out of the report.
 - A listener belongs to a leased directory when its working directory is that directory or inside it (the deepest leased directory wins).
-- `scan <port>` shows only that port. If nothing leased is involved but something listens on it, it still says who: `5000: ControlCenter 1129 (/), not leased` (JSON `status: "unleased"`). If nothing holds it: `5000: free, not leased`.
+- A port is only reported `free` when a bind probe agrees: lsof cannot see the sockets of processes that belong to another user or root.
+- `scan <port>` shows only that port. If nothing leased is involved but something listens on it, it still says who: `5000: ControlCenter 1129 (/), not leased` (JSON `status: "unleased"`), or `in use, not leased` when lsof cannot see the holder. If nothing holds it: `5000: free, not leased`.
 - `--json` prints an array of `{ port, lease: { dir, name } | null, listener: { pid, command, cwd } | null, ownerDir, status }`.
 - **`scan` never changes anything** and exits 0 whenever it ran, warnings or not. Fixing what it reports is up to you: `claim`, `release`, or stopping a process.
 - Without `lsof` on `PATH`, `scan` only says whether each leased port is `in use` or `free`, and prints a note on stderr. `scan` is supported on macOS and Linux, not on Windows.

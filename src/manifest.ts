@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { ExitCode, PortleaseError } from './errors.ts';
 import { canonicalPath } from './paths.ts';
@@ -88,11 +88,14 @@ export function findManifest(startDir: string): Manifest {
       }
       return { dir, file, sections: parseManifest(content, file) };
     }
+    // The repository root bounds the search: a worktree nested inside the main checkout
+    // (.claude/worktrees/x) must not lease for, and rewrite the env files of, the main checkout.
+    if (existsSync(join(dir, '.git'))) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  throw usage(`no ${MANIFEST_FILE} found in ${resolve(startDir)} or any parent directory. ${EXAMPLE}`);
+  throw usage(`no ${MANIFEST_FILE} found in ${resolve(startDir)} or any parent directory up to the repository root. ${EXAMPLE}`);
 }
 
 export function distinctNames(sections: readonly Section[]): string[] {

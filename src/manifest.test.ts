@@ -100,6 +100,19 @@ describe('findManifest', () => {
     assert.deepEqual(manifest.sections, [{ envFile: '.env', names: ['WEB_PORT'] }]);
   });
 
+  test('stops at the repository root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'portlease-manifest-'));
+    writeFileSync(join(root, '.portlease'), '[.env]\nWEB_PORT\n');
+    // A worktree nested inside the main checkout, on a branch without .portlease: its .git is a file.
+    const worktree = join(root, '.claude', 'worktrees', 'old-branch');
+    mkdirSync(join(worktree, 'apps'), { recursive: true });
+    writeFileSync(join(worktree, '.git'), 'gitdir: /somewhere\n');
+    assert.throws(() => findManifest(join(worktree, 'apps')), usageError(/no \.portlease found/));
+    // A git directory at the project root does not stop the search from a subdirectory.
+    mkdirSync(join(root, '.git'));
+    assert.equal(findManifest(join(root, '.claude')).dir, realpathSync(root));
+  });
+
   test('skips a .portlease that is a directory', () => {
     const root = mkdtempSync(join(tmpdir(), 'portlease-manifest-'));
     writeFileSync(join(root, '.portlease'), '[.env]\nWEB_PORT\n');

@@ -37,7 +37,7 @@ portlease scan [--json]     # who listens on each leased port; flags copies that
 portlease scan <port>       # who holds this one port
 ```
 
-- `claim` finds `.portlease` in the current directory or the nearest parent and leases for the directory that holds it, so running it from `apps/web` is the same as from the root. `claim --dir <dir>` starts that search from another directory; `release --dir <dir>` releases another directory (also one that no longer exists). Symlinks are resolved, so the same directory reached by two paths hits the same leases.
+- `claim` finds `.portlease` in the current directory or the nearest parent, up to the repository root (the first directory with a `.git`), and leases for the directory that holds it, so running it from `apps/web` is the same as from the root, and a worktree nested in the main checkout never claims for it. `claim --dir <dir>` starts that search from another directory; `release --dir <dir>` releases another directory (also one that no longer exists). Symlinks are resolved, so the same directory reached by two paths hits the same leases.
 - `claim` prints `NAME=port` lines to stdout (one per distinct name), `Leased for <dir>:` to stderr, and `Released NAME=port` on stderr for names that left `.portlease`.
 - `scan` never changes anything and exits 0 whenever it ran. See "When a port collides".
 
@@ -102,7 +102,8 @@ A renamed or moved directory loses its leases (they are keyed on the path): run 
 On "address already in use", a server that came up on an unexpected port, or a test that talks to the wrong server: **run `portlease scan <port>` (or `portlease scan`) first, before guessing** or reading `lsof` by hand. It crosses the registry with what is listening and says who holds each port:
 
 - `free` / `listening … (this directory)`: as expected.
-- `⚠ held by <cmd> <pid> (<dir>)`: a leased port is taken by a process from another directory (another working copy, another project, or a directory lsof cannot see). Tell the user which process and directory; stopping it or re-leasing is their call.
+- `⚠ held by <cmd> <pid> (<dir>)`: a leased port is taken by a process from another directory (another working copy, another project, or `unknown directory` when lsof cannot read it). Tell the user which process and directory; stopping it or re-leasing is their call.
+- `⚠ in use, holder not visible to lsof`: the port is busy but lsof cannot see the process (another user or root, such as Docker's proxy on Linux). Suggest the `sudo lsof` command it prints; do not run sudo yourself without asking.
 - `⚠ <port> … not leased` under a directory, with `→ run: portlease claim --dir <dir>, then restart its servers`: that working copy is listening on a port it has not leased, usually its default port because its env file lacks the variable. Follow the suggested command.
 - `Unleased in range`: something outside portlease uses the range; informational.
 - `scan <port>` on a port nobody leased still names its holder (`<port>: <cmd> <pid> (<dir>), not leased`).

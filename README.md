@@ -6,7 +6,7 @@ Several working copies of a project (git worktrees, one per AI agent) and severa
 
 ## Install
 
-Needs Node 22 or newer.
+Needs Node 24 or newer.
 
 ```bash
 npm i -g github:desclapez/portlease#v0.2.0

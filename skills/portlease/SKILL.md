@@ -223,4 +223,4 @@ After writing them, run the setup script in a throwaway worktree with a temporar
 - Check `portlease --help` and `portlease claim --dry-run` before changing a setup script: the dry run prints the ports it would assign, the leases it would release, and the lines it would change or add in each env file.
 - On any port collision, run `portlease scan` before anything else (see "When a port collides").
 - Do not invent or hard-code ports for a worktree that is supposed to be leased; ask `portlease ls` or read the env file `claim` wrote.
-- Install (Node 22+): `npm i -g github:desclapez/portlease#v0.2.0`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").
+- Install (Node 24+): `npm i -g github:desclapez/portlease#v0.2.0`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").

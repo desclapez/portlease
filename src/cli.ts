@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { leaseNames, type LeaseResult } from './claim.ts';
 import { diffEnv, readEnvFile, writeEnvFile, type EnvChange } from './env-file.ts';
@@ -93,17 +93,16 @@ async function claim(args: string[], io: Io): Promise<number> {
   const { dir, sections } = manifest;
   const envFiles = sections.map((section) => ({ section, file: resolve(dir, section.envFile) }));
 
-  // Writing ports into a file the project has not created yet would leave a file with only ports,
-  // which a later "copy .env.example if missing" step would then skip.
-  const missing = envFiles.filter(({ file }) => !existsSync(file));
-  if (missing.length > 0) {
+  // A missing env file is created with just the ports. A missing directory is almost certainly a typo
+  // in the section name, so it fails before anything is leased instead of creating folders.
+  const noDirectory = envFiles.filter(({ file }) => !isDirectory(dirname(file)));
+  if (noDirectory.length > 0) {
     throw new PortleaseError(
-      missing
-        .map(({ section }) => `${section.envFile} does not exist: create it before leasing ports (for example from its .env.example)`)
-        .join('\n'),
+      noDirectory.map(({ section }) => `${section.envFile}: the directory ${dirname(section.envFile)} does not exist`).join('\n'),
       ExitCode.usage,
     );
   }
+  const created = envFiles.filter(({ file }) => !existsSync(file));
 
   const names = distinctNames(sections);
   const home = registryHome(io.env);
@@ -122,7 +121,7 @@ async function claim(args: string[], io: Io): Promise<number> {
   if (values['dry-run']) {
     const { results, released } = await plan();
     const diffs = envFiles.map(({ section, file }) => ({
-      label: section.envFile,
+      label: created.some((c) => c.file === file) ? `${section.envFile} (new file)` : section.envFile,
       changes: diffEnv(readEnvFile(file), sectionValues(section, results)),
     }));
     io.stdout(formatDryRun(dir, results, released, diffs));
@@ -148,6 +147,7 @@ async function claim(args: string[], io: Io): Promise<number> {
 
   io.stderr(`Leased for ${dir}:\n`);
   for (const { name, port } of released) io.stderr(`Released ${name}=${port}\n`);
+  for (const { section, file } of created) if (existsSync(file)) io.stderr(`Created ${section.envFile}\n`);
   if (failures.length > 0) {
     for (const failure of failures) io.stderr(`portlease: ${failure.message}\n`);
     return ExitCode.envWrite;

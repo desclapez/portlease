@@ -28,7 +28,6 @@ jobs:
           export PORTLEASE_HOME="$(mktemp -d)"
           cd "$(mktemp -d)"
           printf '[.env.local]\nWEB_PORT\nAPI_PORT\n' > .portlease
-          touch .env.local
           portlease claim
           grep -E '^WEB_PORT=[0-9]+$' .env.local
           grep -E '^API_PORT=[0-9]+$' .env.local

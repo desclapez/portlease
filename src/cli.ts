@@ -5,16 +5,21 @@ import { leaseNames, type LeaseResult } from './claim.ts';
 import { diffEnv, readEnvFile, writeEnvFile, type EnvChange } from './env-file.ts';
 import { ExitCode, PortleaseError } from './errors.ts';
 import { isPortFree } from './free-port.ts';
+import type { Listener } from './listeners.ts';
 import { withLock } from './lock.ts';
 import { canonicalPath, registryHome } from './paths.ts';
 import { distinctNames, findManifest, type Section } from './manifest.ts';
 import { pruneMissingDirs, type Lease, readConfig, readRegistry, saveRegistry } from './registry.ts';
+import { classify, type ScanEntry } from './scan.ts';
 
 export type Io = {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  // null when lsof cannot be run.
+  listListeners: () => Promise<Listener[] | null>;
 };
 
 const USAGE = `Usage:
@@ -197,6 +202,105 @@ function ls(args: string[], io: Io): number {
   return ExitCode.ok;
 }
 
+function parsePort(arg: string): number {
+  const port = /^\d+$/.test(arg) ? Number(arg) : Number.NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new PortleaseError(`"${arg}" is not a port`, ExitCode.usage);
+  }
+  return port;
+}
+
+const describeListener = ({ command, pid }: { command: string; pid: number }) => `${command} ${pid}`;
+const whereFrom = (cwd: string | null) => `(${cwd ?? 'unknown directory'})`;
+
+// Without lsof, all scan can tell is whether each leased port is taken.
+async function probeLeases(leases: Lease[], port: number | undefined): Promise<ScanEntry[]> {
+  const selected = leases
+    .filter((lease) => port === undefined || lease.port === port)
+    .sort((a, b) => a.dir.localeCompare(b.dir) || a.port - b.port);
+  const entries: ScanEntry[] = [];
+  for (const { dir, name, port: leased } of selected) {
+    const status = (await isPortFree(leased)) ? 'free' : 'in-use';
+    entries.push({ port: leased, lease: { dir, name }, listener: null, ownerDir: null, status });
+  }
+  if (port !== undefined && entries.length === 0 && !(await isPortFree(port))) {
+    entries.push({ port, lease: null, listener: null, ownerDir: null, status: 'in-use' });
+  }
+  return entries;
+}
+
+function formatScan(entries: ScanEntry[], port: number | undefined): string {
+  if (entries.length === 0) return port === undefined ? 'No leases.\n' : `${port}: free, not leased\n`;
+  const unrelated = entries.filter((entry) => entry.status === 'unleased' || (entry.status === 'in-use' && !entry.lease));
+  if (unrelated.length > 0) {
+    return unrelated
+      .map(({ listener }) =>
+        listener ? `${port}: ${describeListener(listener)} ${whereFrom(listener.cwd)}, not leased\n` : `${port}: in use, not leased\n`,
+      )
+      .join('');
+  }
+
+  const label = (entry: ScanEntry) => (entry.lease ? `${entry.lease.name}=${entry.port}` : `⚠ ${entry.port}`);
+  const width = Math.max(...entries.map((entry) => label(entry).length));
+  const line = (entry: ScanEntry, text: string) => `  ${label(entry).padEnd(width)}  ${text}`;
+
+  const lines: string[] = [];
+  const dirs = [...new Set(entries.map((entry) => entry.lease?.dir ?? entry.ownerDir).filter((dir) => dir !== null))].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  if (dirs.length === 0 && port === undefined) lines.push('No leases.');
+  for (const dir of dirs) {
+    lines.push(isDirectory(dir) ? dir : `${dir} (missing)`);
+    for (const entry of entries.filter((item) => item.lease?.dir === dir)) {
+      const { listener } = entry;
+      if (entry.status === 'ok' && listener) lines.push(line(entry, `listening ${describeListener(listener)} (this directory)`));
+      else if (entry.status === 'held-by-other' && listener) {
+        lines.push(line(entry, `⚠ held by ${describeListener(listener)} ${whereFrom(listener.cwd)}`));
+      } else lines.push(line(entry, entry.status === 'in-use' ? 'in use' : 'free'));
+    }
+    const notLeased = entries.filter((item) => item.status === 'not-leased' && item.ownerDir === dir);
+    for (const entry of notLeased) {
+      if (entry.listener) lines.push(line(entry, `listening ${describeListener(entry.listener)} (this directory), not leased`));
+    }
+    if (notLeased.length > 0) {
+      lines.push(`      → run: portlease claim --dir ${dir}, then restart its servers`);
+    }
+  }
+
+  const unleased = entries.filter((entry) => entry.status === 'unleased-in-range');
+  if (unleased.length > 0) {
+    lines.push('Unleased in range');
+    for (const entry of unleased) {
+      if (entry.listener) lines.push(`  ${String(entry.port).padEnd(width)}  ${describeListener(entry.listener)} ${whereFrom(entry.listener.cwd)}`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+async function scan(args: string[], io: Io): Promise<number> {
+  if (io.platform === 'win32') throw new PortleaseError('scan is not supported on Windows', ExitCode.usage);
+  const { values, positionals } = parseOrUsage(() =>
+    parseArgs({ args, strict: true, allowPositionals: true, options: { json: { type: 'boolean' } } }),
+  );
+  if (positionals.length > 1) throw new PortleaseError('scan takes at most one port', ExitCode.usage);
+  const port = positionals[0] === undefined ? undefined : parsePort(positionals[0]);
+
+  const home = registryHome(io.env);
+  const { range } = readConfig(home);
+  const { leases } = readRegistry(home, range);
+  const listeners = await io.listListeners();
+  let entries: ScanEntry[];
+  if (listeners === null) {
+    io.stderr('lsof not available: showing only whether leased ports are in use, not who holds them\n');
+    entries = await probeLeases(leases, port);
+  } else {
+    entries = classify({ leases, listeners, range, ...(port === undefined ? {} : { port }) });
+  }
+
+  io.stdout(values.json ? `${JSON.stringify(entries, null, 2)}\n` : formatScan(entries, port));
+  return ExitCode.ok;
+}
+
 export async function main(argv: string[], io: Io): Promise<number> {
   try {
     const [command, ...rest] = argv;
@@ -207,6 +311,8 @@ export async function main(argv: string[], io: Io): Promise<number> {
         return await release(rest, io);
       case 'ls':
         return ls(rest, io);
+      case 'scan':
+        return await scan(rest, io);
       case '-h':
       case '--help':
         io.stdout(USAGE);

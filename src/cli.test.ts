@@ -1,22 +1,24 @@
-import { describe, test } from 'node:test';
+import { describe, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createServer } from 'node:net';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { main, type Io } from './cli.ts';
 
 // The CLI tests run the compiled binary, so `npm test` builds first.
 const BIN = fileURLToPath(new URL('../dist/bin.js', import.meta.url));
 
 type Run = { code: number; stdout: string; stderr: string };
 
-function run(args: string[], options: { cwd: string; home: string }): Promise<Run> {
+function run(args: string[], options: { cwd: string; home: string; env?: NodeJS.ProcessEnv }): Promise<Run> {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
       [BIN, ...args],
-      { cwd: options.cwd, env: { ...process.env, PORTLEASE_HOME: options.home } },
+      { cwd: options.cwd, env: { ...process.env, PORTLEASE_HOME: options.home, ...options.env } },
       (error, stdout, stderr) => {
         const code = error ? (typeof error.code === 'number' ? error.code : 1) : 0;
         resolve({ code, stdout, stderr });
@@ -439,5 +441,154 @@ describe('portlease usage', () => {
     assert.equal(result.code, 0);
     assert.match(result.stdout, /portlease claim \[--dir <dir>\] \[--dry-run\]/);
     assert.match(result.stdout, /portlease scan \[port\] \[--json\]/);
+  });
+});
+
+// A real server, started from `cwd`, so lsof reports it with that working directory.
+async function listen(t: TestContext, port: number, cwd: string): Promise<number> {
+  const script = 'require("net").createServer().listen(Number(process.argv[1]), "127.0.0.1", () => console.log("up"))';
+  const child = spawn(process.execPath, ['-e', script, String(port)], { cwd, stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => {
+    child.kill();
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.once('data', () => resolve());
+    child.once('exit', (code) => reject(new Error(`listener on ${port} exited with ${code}`)));
+  });
+  return child.pid as number;
+}
+
+// A port nobody holds right now, outside the lease range (the OS picks from its ephemeral range).
+function freePort(): Promise<number> {
+  return new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      server.close(() => resolve(typeof address === 'object' && address ? address.port : 0));
+    });
+  });
+}
+
+describe('portlease scan', () => {
+  test('marks a leased port held from its own directory', async (t) => {
+    const { home, work } = sandbox();
+    const ports = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    const pid = await listen(t, ports.WEB_PORT as number, work);
+    const result = await run(['scan'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`^${work}$`, 'm'));
+    assert.match(result.stdout, new RegExp(`WEB_PORT=${ports.WEB_PORT}\\s+listening node ${pid} \\(this directory\\)`));
+    assert.match(result.stdout, new RegExp(`API_PORT=${ports.API_PORT}\\s+free`));
+  });
+
+  test('flags a copy listening on a port it has not leased', async (t) => {
+    const { home, work } = sandbox();
+    await run(CLAIM, { cwd: work, home });
+    const port = await freePort();
+    const pid = await listen(t, port, join(work));
+    const result = await run(['scan'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`⚠ ${port}\\s+listening node ${pid} \\(this directory\\), not leased`));
+    assert.ok(result.stdout.includes(`→ run: portlease claim --dir ${work}, then restart its servers`), result.stdout);
+  });
+
+  test('flags a leased port held by a process from elsewhere', async (t) => {
+    const { root, home, work } = sandbox();
+    const ports = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    const pid = await listen(t, ports.API_PORT as number, root);
+    const result = await run(['scan'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`API_PORT=${ports.API_PORT}\\s+⚠ held by node ${pid} \\(${root}\\)`));
+  });
+
+  test('scan <port> answers who holds an unleased port', async (t) => {
+    const { root, home } = sandbox();
+    const port = await freePort();
+    const pid = await listen(t, port, root);
+    const result = await run(['scan', String(port)], { cwd: root, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`^${port}: node ${pid} \\(${root}\\), not leased$`, 'm'));
+  });
+
+  test('scan <port> on a free port', async () => {
+    const { home, work } = sandbox();
+    const port = await freePort();
+    const result = await run(['scan', String(port)], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `${port}: free, not leased\n`);
+  });
+
+  test('scan <port> on a leased port shows only that lease', async () => {
+    const { home, work } = sandbox();
+    const ports = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    const result = await run(['scan', String(ports.WEB_PORT)], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`WEB_PORT=${ports.WEB_PORT}\\s+free`));
+    assert.doesNotMatch(result.stdout, /API_PORT/);
+  });
+
+  test('--json lists entries with their status', async () => {
+    const { home, work } = sandbox();
+    await run(CLAIM, { cwd: work, home });
+    const result = await run(['scan', '--json'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    const entries = JSON.parse(result.stdout) as Array<{ status: string; lease: { dir: string; name: string } | null }>;
+    const ours = entries.filter((entry) => entry.lease?.dir === work);
+    assert.deepEqual(ours.map((entry) => entry.lease?.name).sort(), ['API_PORT', 'WEB_PORT']);
+    for (const entry of ours) assert.equal(entry.status, 'free');
+  });
+
+  test('says so when there are no leases', async () => {
+    const { home, work } = sandbox();
+    const result = await run(['scan'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^No leases\.$/m);
+  });
+
+  test('without lsof it only says whether leased ports are in use', async () => {
+    const { home, work } = sandbox();
+    await run(CLAIM, { cwd: work, home });
+    const result = await run(['scan'], { cwd: work, home, env: { PATH: dirname(process.execPath) } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /lsof not available: showing only whether leased ports are in use, not who holds them/);
+    assert.match(result.stdout, /WEB_PORT=\d+\s+(in use|free)/);
+    assert.match(result.stdout, /API_PORT=\d+\s+(in use|free)/);
+  });
+
+  test('an invalid port is a usage error', async () => {
+    const { home, work } = sandbox();
+    for (const arg of ['abc', '0', '65536', '80.5']) {
+      const result = await run(['scan', arg], { cwd: work, home });
+      assert.equal(result.code, 1, arg);
+      assert.match(result.stderr, new RegExp(`"${arg.replace('.', '\\.')}" is not a port`));
+    }
+  });
+
+  test('scan never writes', async (t) => {
+    const { home, work } = sandbox();
+    await run(CLAIM, { cwd: work, home });
+    await listen(t, await freePort(), work);
+    const leasesBefore = readFileSync(join(home, 'leases.json'), 'utf8');
+    const envBefore = readFileSync(join(work, '.env.local'), 'utf8');
+    const result = await run(['scan'], { cwd: work, home });
+    assert.match(result.stdout, /not leased/);
+    assert.equal(readFileSync(join(home, 'leases.json'), 'utf8'), leasesBefore);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), envBefore);
+  });
+
+  test('is not supported on Windows', async () => {
+    const { home, work } = sandbox();
+    let stderr = '';
+    const io: Io = {
+      stdout: () => {},
+      stderr: (text) => {
+        stderr += text;
+      },
+      cwd: work,
+      env: { PORTLEASE_HOME: home },
+      platform: 'win32',
+      listListeners: async () => [],
+    };
+    assert.equal(await main(['scan'], io), 1);
+    assert.match(stderr, /scan is not supported on Windows/);
   });
 });

@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { leaseNames, type LeaseResult } from './claim.ts';
@@ -7,8 +7,8 @@ import { ExitCode, PortleaseError } from './errors.ts';
 import { isPortFree } from './free-port.ts';
 import { withLock } from './lock.ts';
 import { canonicalPath, registryHome } from './paths.ts';
-import { readPortsFile } from './ports-file.ts';
-import { pruneMissingDirs, readConfig, readRegistry, saveRegistry } from './registry.ts';
+import { distinctNames, findManifest, type Section } from './manifest.ts';
+import { pruneMissingDirs, type Lease, readConfig, readRegistry, saveRegistry } from './registry.ts';
 
 export type Io = {
   stdout: (text: string) => void;
@@ -18,9 +18,10 @@ export type Io = {
 };
 
 const USAGE = `Usage:
-  portlease claim --ports <file> --env <file> [--dir <dir>] [--dry-run]
+  portlease claim [--dir <dir>] [--dry-run]
   portlease release [--dir <dir>]
   portlease ls [--json]
+  portlease scan [port] [--json]
 `;
 
 function isDirectory(path: string): boolean {
@@ -39,18 +40,29 @@ function parseOrUsage<T>(parse: () => T): T {
   }
 }
 
-const toValues = (results: LeaseResult[]) => new Map(results.map(({ name, port }) => [name, port]));
+// In the section's own order, so names missing from the env file are appended as the manifest lists them.
+function sectionValues(section: Section, results: LeaseResult[]): Map<string, number> {
+  const ports = new Map(results.map(({ name, port }) => [name, port]));
+  return new Map(section.names.map((name) => [name, ports.get(name) as number]));
+}
 
-function formatDryRun(dir: string, envLabel: string, results: LeaseResult[], changes: EnvChange[]): string {
+type EnvDiff = { label: string; changes: EnvChange[] };
+
+function formatDryRun(dir: string, results: LeaseResult[], released: Lease[], diffs: EnvDiff[]): string {
   const lines = [`Dry run for ${dir}: nothing was written.`, ''];
   for (const { name, port, reused } of results) {
     lines.push(`  ${name}=${port}  ${reused ? 'existing lease' : 'new lease (tentative)'}`);
   }
-  lines.push('');
-  if (changes.length === 0) {
-    lines.push(`${envLabel}: no changes`);
-  } else {
-    lines.push(`${envLabel}:`);
+  for (const { name, port } of released) {
+    lines.push(`  Would release ${name}=${port}  (no longer in .portlease)`);
+  }
+  for (const { label, changes } of diffs) {
+    lines.push('');
+    if (changes.length === 0) {
+      lines.push(`${label}: no changes`);
+      continue;
+    }
+    lines.push(`${label}:`);
     for (const change of changes) {
       lines.push(change.kind === 'append' ? `  + ${change.after}` : `  ~ ${change.before}  ->  ${change.after}`);
     }
@@ -64,20 +76,31 @@ async function claim(args: string[], io: Io): Promise<number> {
       args,
       strict: true,
       options: {
-        ports: { type: 'string' },
-        env: { type: 'string' },
         dir: { type: 'string' },
         'dry-run': { type: 'boolean' },
       },
     }),
   );
-  if (!values.ports) throw new PortleaseError('missing --ports <file>', ExitCode.usage);
-  if (!values.env) throw new PortleaseError('missing --env <file>', ExitCode.usage);
 
-  const names = readPortsFile(resolve(io.cwd, values.ports));
-  const dir = canonicalPath(resolve(io.cwd, values.dir ?? '.'));
-  if (!isDirectory(dir)) throw new PortleaseError(`${dir} is not an existing directory`, ExitCode.usage);
-  const envFile = resolve(io.cwd, values.env);
+  const start = canonicalPath(resolve(io.cwd, values.dir ?? '.'));
+  if (!isDirectory(start)) throw new PortleaseError(`${start} is not an existing directory`, ExitCode.usage);
+  const manifest = findManifest(start);
+  const { dir, sections } = manifest;
+  const envFiles = sections.map((section) => ({ section, file: resolve(dir, section.envFile) }));
+
+  // Writing ports into a file the project has not created yet would leave a file with only ports,
+  // which a later "copy .env.example if missing" step would then skip.
+  const missing = envFiles.filter(({ file }) => !existsSync(file));
+  if (missing.length > 0) {
+    throw new PortleaseError(
+      missing
+        .map(({ section }) => `${section.envFile} does not exist: create it before leasing ports (for example from its .env.example)`)
+        .join('\n'),
+      ExitCode.usage,
+    );
+  }
+
+  const names = distinctNames(sections);
   const home = registryHome(io.env);
   const { range } = readConfig(home);
 
@@ -92,18 +115,38 @@ async function claim(args: string[], io: Io): Promise<number> {
     });
 
   if (values['dry-run']) {
-    const { results } = await plan();
-    io.stdout(formatDryRun(dir, values.env, results, diffEnv(readEnvFile(envFile), toValues(results))));
+    const { results, released } = await plan();
+    const diffs = envFiles.map(({ section, file }) => ({
+      label: section.envFile,
+      changes: diffEnv(readEnvFile(file), sectionValues(section, results)),
+    }));
+    io.stdout(formatDryRun(dir, results, released, diffs));
     return ExitCode.ok;
   }
 
-  const { results } = await withLock(home, async () => {
+  const { results, released } = await withLock(home, async () => {
     const outcome = await plan();
     saveRegistry(home, outcome.registry);
     return outcome;
   });
-  writeEnvFile(envFile, toValues(results));
+
+  // One unwritable file must not keep the others from getting their ports; claim again repairs it.
+  const failures: PortleaseError[] = [];
+  for (const { section, file } of envFiles) {
+    try {
+      writeEnvFile(file, sectionValues(section, results));
+    } catch (error) {
+      if (!(error instanceof PortleaseError)) throw error;
+      failures.push(error);
+    }
+  }
+
   io.stderr(`Leased for ${dir}:\n`);
+  for (const { name, port } of released) io.stderr(`Released ${name}=${port}\n`);
+  if (failures.length > 0) {
+    for (const failure of failures) io.stderr(`portlease: ${failure.message}\n`);
+    return ExitCode.envWrite;
+  }
   io.stdout(results.map(({ name, port }) => `${name}=${port}\n`).join(''));
   return ExitCode.ok;
 }

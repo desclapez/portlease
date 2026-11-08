@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,23 +25,32 @@ function run(args: string[], options: { cwd: string; home: string }): Promise<Ru
   });
 }
 
-function sandbox() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'portlease-cli-')));
-  const home = join(root, 'home');
-  const work = join(root, 'work');
-  mkdirSync(work);
-  writeFileSync(join(work, '.ports'), 'WEB_PORT\nAPI_PORT\n');
-  return { root, home, work };
-}
+const MANIFEST = '[.env.local]\nWEB_PORT\nAPI_PORT\n';
 
 function workdir(root: string, name: string): string {
   const dir = join(root, name);
   mkdirSync(dir);
-  writeFileSync(join(dir, '.ports'), 'WEB_PORT\nAPI_PORT\n');
+  writeFileSync(join(dir, '.portlease'), MANIFEST);
+  writeFileSync(join(dir, '.env.local'), '');
   return dir;
 }
 
-const CLAIM = ['claim', '--ports', '.ports', '--env', '.env.local'];
+function sandbox() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'portlease-cli-')));
+  const home = join(root, 'home');
+  const work = workdir(root, 'work');
+  return { root, home, work };
+}
+
+// Creates each env file (empty unless given content) under dir.
+function envFiles(dir: string, files: Record<string, string>): void {
+  for (const [file, content] of Object.entries(files)) {
+    mkdirSync(join(dir, file, '..'), { recursive: true });
+    writeFileSync(join(dir, file), content);
+  }
+}
+
+const CLAIM = ['claim'];
 
 function parseEnvLines(text: string): Record<string, number> {
   return Object.fromEntries(
@@ -151,25 +160,80 @@ describe('portlease claim', () => {
     assert.deepEqual([...new Set(leases.map((lease) => lease.dir))], [work]);
   });
 
-  test('missing --ports or --env is a usage error that writes nothing', async () => {
+  test('writes each section to its own env file, one port per name across sections', async () => {
     const { home, work } = sandbox();
-    const noEnv = await run(['claim', '--ports', '.ports'], { cwd: work, home });
-    assert.equal(noEnv.code, 1);
-    assert.match(noEnv.stderr, /missing --env/);
-    const noPorts = await run(['claim', '--env', '.env.local'], { cwd: work, home });
-    assert.equal(noPorts.code, 1);
-    assert.match(noPorts.stderr, /missing --ports/);
-    assert.equal(existsSync(join(home, 'leases.json')), false);
-    assert.equal(existsSync(join(work, '.env.local')), false);
+    writeFileSync(join(work, '.portlease'), '[apps/server/.env]\nAPI_PORT\n\n[apps/web/.env]\nWEB_PORT\nAPI_PORT\n');
+    envFiles(work, { 'apps/server/.env': 'SECRET=1\n', 'apps/web/.env': '' });
+    const result = await run(CLAIM, { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^API_PORT=\d+\nWEB_PORT=\d+\n$/);
+    const ports = parseEnvLines(result.stdout);
+    assert.notEqual(ports.API_PORT, ports.WEB_PORT);
+    assert.equal(readFileSync(join(work, 'apps/server/.env'), 'utf8'), `SECRET=1\nAPI_PORT=${ports.API_PORT}\n`);
+    assert.equal(readFileSync(join(work, 'apps/web/.env'), 'utf8'), `WEB_PORT=${ports.WEB_PORT}\nAPI_PORT=${ports.API_PORT}\n`);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), '');
+    assert.equal((await lsJson(home, work)).length, 2);
   });
 
-  test('an invalid ports file is a usage error naming the line', async () => {
+  test('run from a subdirectory leases the directory that holds .portlease', async () => {
     const { home, work } = sandbox();
-    writeFileSync(join(work, '.ports'), 'WEB_PORT\nAPI-PORT\n');
+    const web = join(work, 'apps', 'web');
+    mkdirSync(web, { recursive: true });
+    const result = await run(CLAIM, { cwd: web, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, new RegExp(`Leased for ${work}:`));
+    assert.deepEqual([...new Set((await lsJson(home, work)).map((lease) => lease.dir))], [work]);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), result.stdout);
+  });
+
+  test('--dir starts the search from another directory', async () => {
+    const { root, home, work } = sandbox();
+    mkdirSync(join(work, 'apps'));
+    const result = await run([...CLAIM, '--dir', join(work, 'apps')], { cwd: root, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual([...new Set((await lsJson(home, work)).map((lease) => lease.dir))], [work]);
+  });
+
+  test('a missing env file is a usage error that leases nothing', async () => {
+    const { home, work } = sandbox();
+    writeFileSync(join(work, '.env.local'), 'SECRET=1\n');
+    writeFileSync(join(work, '.portlease'), '[.env.local]\nWEB_PORT\n\n[apps/web/.env]\nWEB_PORT\n\n[apps/server/.env]\nAPI_PORT\n');
     const result = await run(CLAIM, { cwd: work, home });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /\.ports:2: "API-PORT"/);
+    assert.match(result.stderr, /apps\/web\/\.env does not exist: create it before leasing ports/);
+    assert.match(result.stderr, /apps\/server\/\.env does not exist/);
+    assert.deepEqual(await lsJson(home, work), []);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), 'SECRET=1\n');
+  });
+
+  test('without a .portlease it is a usage error', async () => {
+    const { root, home } = sandbox();
+    const empty = join(root, 'empty');
+    mkdirSync(empty);
+    const result = await run(CLAIM, { cwd: empty, home });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /no \.portlease found/);
+  });
+
+  test('an invalid .portlease is a usage error naming the line', async () => {
+    const { home, work } = sandbox();
+    writeFileSync(join(work, '.portlease'), '[.env.local]\nAPI-PORT\n');
+    const result = await run(CLAIM, { cwd: work, home });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /\.portlease:2: "API-PORT"/);
     assert.equal(existsSync(join(home, 'leases.json')), false);
+  });
+
+  test('a name removed from .portlease is released on the next claim', async () => {
+    const { home, work } = sandbox();
+    const first = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    writeFileSync(join(work, '.portlease'), '[.env.local]\nWEB_PORT\n');
+    const second = await run(CLAIM, { cwd: work, home });
+    assert.equal(second.code, 0, second.stderr);
+    assert.match(second.stderr, new RegExp(`Released API_PORT=${first.API_PORT}`));
+    assert.equal(second.stdout, `WEB_PORT=${first.WEB_PORT}\n`);
+    assert.deepEqual((await lsJson(home, work)).map((lease) => lease.name), ['WEB_PORT']);
+    assert.match(readFileSync(join(work, '.env.local'), 'utf8'), new RegExp(`^API_PORT=${first.API_PORT}$`, 'm'));
   });
 
   test('a missing --dir is a usage error', async () => {
@@ -187,7 +251,7 @@ describe('portlease claim', () => {
     assert.equal(result.code, 2);
     assert.match(result.stderr, /range exhausted/);
     assert.equal(existsSync(join(home, 'leases.json')), false);
-    assert.equal(existsSync(join(work, '.env.local')), false);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), '');
   });
 
   test('a registry with a newer format fails with code 3 and stays untouched', async () => {
@@ -201,12 +265,17 @@ describe('portlease claim', () => {
     assert.equal(readFileSync(join(home, 'leases.json'), 'utf8'), newer);
   });
 
-  test('an unwritable env file fails with code 5 and keeps the leases', async () => {
+  test('an unwritable env file fails with code 5, names it, and still writes the others', async (t) => {
     const { home, work } = sandbox();
-    const result = await run(['claim', '--ports', '.ports', '--env', 'missing/.env.local'], { cwd: work, home });
+    writeFileSync(join(work, '.portlease'), '[locked/.env]\nWEB_PORT\n\n[.env.local]\nWEB_PORT\nAPI_PORT\n');
+    envFiles(work, { 'locked/.env': '' });
+    chmodSync(join(work, 'locked'), 0o555);
+    t.after(() => chmodSync(join(work, 'locked'), 0o755));
+    const result = await run(CLAIM, { cwd: work, home });
     assert.equal(result.code, 5);
-    assert.match(result.stderr, /run claim again/);
+    assert.match(result.stderr, /cannot write env file .*locked\/\.env.*run claim again/);
     assert.equal((await lsJson(home, work)).length, 2);
+    assert.match(readFileSync(join(work, '.env.local'), 'utf8'), /^WEB_PORT=\d+\nAPI_PORT=\d+\n$/);
   });
 });
 
@@ -232,6 +301,32 @@ describe('portlease claim --dry-run', () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, new RegExp(`WEB_PORT=${ports.WEB_PORT} {2}existing lease`));
     assert.match(result.stdout, /\.env\.local: no changes/);
+  });
+
+  test('reports changes per env file and leases it would release', async () => {
+    const { home, work } = sandbox();
+    const claimed = parseEnvLines((await run(CLAIM, { cwd: work, home })).stdout);
+    writeFileSync(join(work, '.portlease'), '[.env.local]\nWEB_PORT\n\n[apps/web/.env]\nWEB_PORT\n');
+    envFiles(work, { 'apps/web/.env': '' });
+    const leasesBefore = readFileSync(join(home, 'leases.json'), 'utf8');
+    const envBefore = readFileSync(join(work, '.env.local'), 'utf8');
+    const result = await run([...CLAIM, '--dry-run'], { cwd: work, home });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Dry run for ${work}: nothing was written\\.`));
+    assert.match(result.stdout, new RegExp(`^apps/web/\\.env:\\n {2}\\+ WEB_PORT=${claimed.WEB_PORT}$`, 'm'));
+    assert.match(result.stdout, /^\.env\.local: no changes$/m);
+    assert.match(result.stdout, new RegExp(`Would release API_PORT=${claimed.API_PORT}`));
+    assert.equal(readFileSync(join(home, 'leases.json'), 'utf8'), leasesBefore);
+    assert.equal(readFileSync(join(work, '.env.local'), 'utf8'), envBefore);
+    assert.equal(readFileSync(join(work, 'apps/web/.env'), 'utf8'), '');
+  });
+
+  test('a missing env file fails the dry run too', async () => {
+    const { home, work } = sandbox();
+    writeFileSync(join(work, '.portlease'), '[apps/web/.env]\nWEB_PORT\n');
+    const result = await run([...CLAIM, '--dry-run'], { cwd: work, home });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /apps\/web\/\.env does not exist/);
   });
 });
 
@@ -330,10 +425,19 @@ describe('portlease usage', () => {
     assert.equal(result.code, 1);
   });
 
+  test('the removed --ports and --env options are unknown', async () => {
+    const { home, work } = sandbox();
+    const result = await run(['claim', '--ports', '.ports', '--env', '.env.local'], { cwd: work, home });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--ports/);
+    assert.equal(existsSync(join(home, 'leases.json')), false);
+  });
+
   test('--help prints the usage and succeeds', async () => {
     const { home, work } = sandbox();
     const result = await run(['--help'], { cwd: work, home });
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /portlease claim --ports <file> --env <file>/);
+    assert.match(result.stdout, /portlease claim \[--dir <dir>\] \[--dry-run\]/);
+    assert.match(result.stdout, /portlease scan \[port\] \[--json\]/);
   });
 });

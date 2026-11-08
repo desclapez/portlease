@@ -1,6 +1,6 @@
 {
   "name": "portlease",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Unique dev ports per directory, from a machine-wide registry, written into your .env",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

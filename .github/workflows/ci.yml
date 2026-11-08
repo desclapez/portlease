@@ -11,13 +11,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -28,8 +27,9 @@ jobs:
           npm install -g ./portlease-*.tgz
           export PORTLEASE_HOME="$(mktemp -d)"
           cd "$(mktemp -d)"
-          printf 'WEB_PORT\nAPI_PORT\n' > .ports
-          portlease claim --ports .ports --env .env.local
+          printf '[.env.local]\nWEB_PORT\nAPI_PORT\n' > .portlease
+          touch .env.local
+          portlease claim
           grep -E '^WEB_PORT=[0-9]+$' .env.local
           grep -E '^API_PORT=[0-9]+$' .env.local
           portlease release

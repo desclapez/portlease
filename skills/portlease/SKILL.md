@@ -1,11 +1,11 @@
 ---
 name: portlease
-description: Find every port a project opens during development and testing and lease them with the `portlease` CLI, so that parallel agents, worktrees, features or other projects on the same machine never collide. Use whenever the user mentions port collisions or "address already in use", running several agents/worktrees/branches of one project at once, a `.ports` file or `portlease`, or asks to audit a project's env files and dev/test scripts for ports — even if they do not name the tool.
+description: Find every port a project opens during development and testing and lease them with the `portlease` CLI and a `.portlease` file, so that parallel agents, worktrees, features or other projects on the same machine never collide, and use `portlease scan` to find out who holds a port when they do. Use whenever the user mentions port collisions or "address already in use", a server that came up on an unexpected port, running several agents/worktrees/branches of one project at once, a `.portlease` file, `portlease` or `portlease scan`, or asks to audit a project's env files and dev/test scripts for ports — even if they do not name the tool.
 ---
 
 # portlease
 
-`portlease` hands out one unique port per (directory, variable name) from a registry shared by the whole machine, and writes the ports into an env file. Several worktrees of one project, or several projects, can then run dev servers at the same time without colliding. Applications never call it: they only read their environment.
+`portlease` hands out one unique port per (directory, variable name) from a registry shared by the whole machine, and writes the ports into the project's env files, as listed in one `.portlease` file at the project root. Several worktrees of one project, or several projects, can then run dev servers at the same time without colliding. Applications never call it: they only read their environment.
 
 Use it from whatever creates and destroys a working copy (Orca `setup` / `archive` scripts, a shell script, by hand).
 
@@ -22,48 +22,56 @@ Do an audit before changing anything. The goal is every port that a flow an agen
 3. **Look for what is not written down.** Framework defaults that no file mentions are the most dangerous, because they collide silently: Next/Nuxt/Docusaurus 3000, Vite 5173 (and its HMR socket), webpack-dev-server 8080, Angular 4200, Astro 4321, Parcel 1234, Metro/Expo 8081, Storybook 6006, Prisma Studio 5555, Node `--inspect` 9229, Vitest UI, Playwright UI/report servers, Jupyter 8888, MailHog 1025/8025, local Postgres/MySQL/Redis containers. Also note tools that move to the next free port when theirs is busy (Vite does unless `strictPort`): that hides a collision until two servers point at each other.
 4. **Check against reality when you can.** Start the dev and test flows (or read their logs) and run `lsof -nP -iTCP -sTCP:LISTEN` to see what actually opens a port, including children of the scripts. Anything the static read missed shows up here. Ask before running something heavy or with side effects.
 5. **Classify each port.** Leave alone: ports the OS assigns (`listen(0)`, tests that pick a free port themselves), production/CI-only ports, and ports of services shared on purpose across checkouts. Lease: everything fixed that a dev, test or tooling flow opens in the project checkout.
-6. **Report before editing.** Give the user a table: port, process, flow (dev/test/e2e/tooling), where it is defined (file:line), how it collides (same project in another checkout, or a likely clash with other projects), and the name you propose. Wait for agreement, then apply.
+6. **Report before editing.** Give the user a table: port, process, flow (dev/test/e2e/tooling), where it is defined (file:line), how it collides (same project in another checkout, or a likely clash with other projects), and the name you propose. End with the `.portlease` file you propose (one section per env file, see "Which env file should hold the leased ports?"). Wait for agreement, then apply.
 
-Naming rules that follow from the leases: dev and e2e/test ports need different names (different names are different leases); a port two apps share (a web proxy targeting the API) gets the same name in both apps' ports files; use the variable the app already reads when there is one.
+Naming rules that follow from the leases: dev and e2e/test ports need different names (different names are different leases); a port two apps share (a web proxy targeting the API) gets the same name in both apps' sections; use the variable the app already reads when there is one.
 
 ## Commands
 
 ```bash
-portlease claim --ports .ports --env .env.local   # lease the names in .ports for this directory, write them to the env file
-portlease claim --ports .ports --env .env.local --dry-run   # show what would happen, change nothing
-portlease release                                 # free this directory's ports
-portlease ls [--json]                             # every lease on the machine
+portlease claim             # lease every name in .portlease for this project, write each env file
+portlease claim --dry-run   # show what would happen, change nothing
+portlease release           # free this directory's ports
+portlease ls [--json]       # every lease on the machine
+portlease scan [--json]     # who listens on each leased port; flags copies that are off their leases
+portlease scan <port>       # who holds this one port
 ```
 
-- `--ports` and `--env` are both required, relative to the current directory. A missing one is a usage error, never an implicit dry run, so a forgotten flag in a setup script fails loudly.
-- `--dir <dir>` leases for (or releases) another directory instead of the current one. Symlinks are resolved, so the same directory reached by two paths hits the same leases.
-- `claim` prints `NAME=port` lines to stdout (valid `.env` content) and `Leased for <dir>:` to stderr.
+- `claim` finds `.portlease` in the current directory or the nearest parent, up to the repository root (the first directory with a `.git`), and leases for the directory that holds it, so running it from `apps/web` is the same as from the root, and a worktree nested in the main checkout never claims for it. `claim --dir <dir>` starts that search from another directory; `release --dir <dir>` releases another directory (also one that no longer exists). Symlinks are resolved, so the same directory reached by two paths hits the same leases.
+- `claim` prints `NAME=port` lines to stdout (one per distinct name), `Leased for <dir>:` to stderr, and `Released NAME=port` on stderr for names that left `.portlease`.
+- `scan` never changes anything and exits 0 whenever it ran. See "When a port collides".
 
-## The ports file
+## The .portlease file
 
-One environment variable name per line. Blank lines and `#` comments are ignored, a repeated name counts once, an invalid name (`^[A-Za-z_][A-Za-z0-9_]*$`) is an error that names the line.
+One file per project, committed, at the project root. `[path]` starts a section naming an env file relative to that root (it must stay inside the project: no absolute paths, no `..`); below it, one variable name per line. Blank lines and `#` comment lines are ignored (no comments at the end of a name line), a name repeated within a section counts once. An invalid name (`^[A-Za-z_][A-Za-z0-9_]*$`), a name before the first section, an empty section or the same path twice is an error that names the line.
 
 ```
-# .ports
+# .portlease
+[apps/server/.env]
+API_PORT
+
+[apps/web/.env]
 WEB_PORT
 API_PORT
+
+[.env.e2e]
+E2E_API_PORT
+E2E_WEB_PORT
 ```
 
-## What `claim` does to the env file
+## What `claim` does to the env files
 
+- **Every env file listed must already exist.** A missing one is a usage error (exit 1) before anything is leased, naming the file; create it first (from its `.env.example`, by the install, or by copying it). So the setup order "claim after the install and after any env copy" is enforced.
+- Writes each env file with only its own section's names.
 - Replaces every `NAME=…` / `export NAME=…` line for a listed name with `NAME=port` (the old value and inline comments on that line are dropped), and appends names that are missing.
 - Leaves every other line byte for byte, keeps CRLF, keeps the file mode (a new file gets 0644), and writes through a symlinked env file.
 - Never reads values from the env file: the registry is the source of truth. So copy or generate the env file first, then `claim`, and the copied port values are overwritten.
-- Is idempotent: running it again returns the same ports and rewrites the file. Use it to repair an env file that was regenerated. Names that were removed from the ports file keep their lease until `release`.
+- Is idempotent: running it again returns the same ports and rewrites the files. Use it to repair an env file that was regenerated. A name removed from `.portlease` is released on the next `claim`; its line stays in the env file.
+- If one env file cannot be written, the others still are; the exit code is 5 and the message names the file.
 
-## One lease per name, one file per app
+## One lease per name, shared across sections
 
-A lease is keyed on (directory, name). If two apps need the same port (a web app proxying to an API), give both ports files the same name: two `claim`s from the same directory, one per env file, write the same number into both.
-
-```bash
-portlease claim --ports apps/server/.ports --env apps/server/.env
-portlease claim --ports apps/web/.ports --env apps/web/.env   # also lists API_PORT: same port as above
-```
+A lease is keyed on (directory, name). If two apps need the same port (a web app proxying to an API), list the same name in both apps' sections: it is one lease, so one port, written into both env files.
 
 Two *different* names are always two different ports. If the API must be reachable as `PORT` for one app and `API_PORT` for another, they will not match; pick one name and make the app read it.
 
@@ -72,8 +80,8 @@ Two *different* names are always two different ports. If the API must be reachab
 ```yaml
 scripts:
   setup: |
-    cp ../app/.env.local .env.local    # copy or generate the env file first
-    portlease claim --ports .ports --env .env.local
+    cp ../app/.env.local .env.local    # copy or generate every env file first
+    portlease claim
   archive: portlease release
 ```
 
@@ -85,19 +93,36 @@ Ports come from `20000–29999` by default, allocated by a cursor that only move
 
 ## Where things live
 
-Registry directory: `$PORTLEASE_HOME`, else `$XDG_CONFIG_HOME/portlease`, else `~/.config/portlease`. It holds `leases.json`, optional `config.json` and `leases.lock`. Do not edit `leases.json` by hand; use `claim`, `release` and `ls`. Set `PORTLEASE_HOME` to a temp directory when experimenting or testing so the real registry stays clean.
+Registry directory: `$PORTLEASE_HOME`, else `$XDG_CONFIG_HOME/portlease`, else `~/.config/portlease`. It holds `leases.json`, optional `config.json` and `leases.lock`. Do not edit `leases.json` by hand; use `claim`, `release`, `ls` and `scan`. Set `PORTLEASE_HOME` to a temp directory when experimenting or testing so the real registry stays clean.
 
 A renamed or moved directory loses its leases (they are keyed on the path): run `claim` again in the new location.
+
+## When a port collides
+
+On "address already in use", a server that came up on an unexpected port, or a test that talks to the wrong server: **run `portlease scan <port>` (or `portlease scan`) first, before guessing** or reading `lsof` by hand. It crosses the registry with what is listening and says who holds each port:
+
+- `free` / `listening … (this directory)`: as expected.
+- `⚠ held by <cmd> <pid> (<dir>)`: a leased port is taken by a process from another directory (another working copy, another project, or `unknown directory` when lsof cannot read it). Tell the user which process and directory; stopping it or re-leasing is their call.
+- `⚠ in use, holder not visible to lsof`: the port is busy but lsof cannot see the process (another user or root, such as Docker's proxy on Linux). Suggest the `sudo lsof` command it prints; do not run sudo yourself without asking.
+- `⚠ <port> … not leased` under a directory, with `→ run: portlease claim --dir <dir>, then restart its servers`: that working copy is listening on a port it has not leased, usually its default port because its env file lacks the variable. Follow the suggested command.
+- `Unleased in range`: something outside portlease uses the range; informational.
+- `scan <port>` on a port nobody leased still names its holder (`<port>: <cmd> <pid> (<dir>), not leased`).
+
+Never kill a process that belongs to another working copy or project without asking the user. Use `--json` to read the result in a script. Without `lsof`, `scan` only says whether leased ports are in use. It is not available on Windows.
+
+## Keeping working copies in sync
+
+`.portlease` is committed, so it changes with branches. After pulling, rebasing or switching branches in a leased working copy, if `.portlease` changed, run `portlease claim` there and restart its servers. When you edit `.portlease` yourself, tell the user that the other working copies need `portlease claim` too (`portlease scan` shows which ones are listening on ports they have not leased), and do not run `claim` in other working copies without an ok.
 
 ## Exit codes and what to do
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 1 | Usage error: unknown command or option, missing `--ports`/`--env`, bad ports file, `--dir` not a directory | Read the message; it names the file and line |
+| 1 | Usage error: unknown command or option, no `.portlease` found, invalid `.portlease`, a listed env file does not exist, `--dir` not a directory, invalid port for `scan`, `scan` on Windows | Read the message; it names the file and line. Create a missing env file before claiming |
 | 2 | Range exhausted | `portlease ls` to see who holds ports, release stale ones, or widen the range |
 | 3 | Registry problem (unreadable, invalid, or written by a newer portlease) | Fix or delete `leases.json` (deleting forgets every lease), or upgrade portlease |
 | 4 | Registry locked for over 10 s | If no portlease is running, delete `leases.lock` |
-| 5 | Env file could not be written | The ports are already leased: fix the path or permissions and run `claim` again |
+| 5 | An env file could not be written | The ports are already leased and the other env files written: fix the path or permissions and run `claim` again |
 
 ## Adding portlease to a repository
 
@@ -105,29 +130,28 @@ Start from the agreed audit table. What is needed is small; everything else is a
 
 ### Needed
 
-1. **Name each leased port after the variable the app already reads** (`PORT` stays `PORT`, `VITE_API_PORT` stays that). Add a new variable only where the port is hard-coded today (a script flag like `vite --port 4000`, a constant in a stub or config, a tool default). Dev and test/e2e ports need different names, because different names are different leases. When two apps need the same port (a web proxy pointing at the API), they need the same *name* in both ports files, so pick one name for it; an app that reads it under another name can be mapped in its script.
-2. **A ports file per env file** (see "The ports file"), listing the names that env file must hold.
+1. **Name each leased port after the variable the app already reads** (`PORT` stays `PORT`, `VITE_API_PORT` stays that). Add a new variable only where the port is hard-coded today (a script flag like `vite --port 4000`, a constant in a stub or config, a tool default). Dev and test/e2e ports need different names, because different names are different leases. When two apps need the same port (a web proxy pointing at the API), they need the same *name* in both sections, so pick one name for it; an app that reads it under another name can be mapped in its script.
+2. **One `.portlease` at the project root** (see "The .portlease file"), with a section per env file listing the names that env file must hold.
 3. **Every leased port is read from the environment** by the process that opens it (and by whatever points at it, such as a proxy). Make the smallest change that gets there.
 4. **Setup and teardown scripts** that claim after the working copy exists and release when it goes away (next section).
 5. **Verify** with a throwaway registry before finishing:
 
    ```bash
    export PORTLEASE_HOME="$(mktemp -d)"
-   portlease claim --ports apps/web/.ports --env apps/web/.env --dry-run   # what would change
-   portlease claim --ports apps/server/.ports --env apps/server/.env
-   portlease claim --ports apps/web/.ports --env apps/web/.env             # shared names match the server's
+   portlease claim --dry-run   # what would change in each env file
+   portlease claim             # shared names get one port in every file
    portlease ls
    ```
 
-   Start the apps with those env files and check they listen on the leased ports, run the tests, run `portlease release`, then restore the env files you had before (back up anything with real configuration first). Never `claim` in the main checkout unless the user asks: it keeps the default ports on purpose.
+   Start the apps with those env files and check with `portlease scan` that they listen on the leased ports (no `not leased` warnings), run the tests, run `portlease release`, then restore the env files you had before (back up anything with real configuration first). Never `claim` in the main checkout unless the user asks: it keeps the default ports on purpose.
 
 Do not hand-edit a user's real, gitignored env file (secrets, local configuration). `claim` adds or replaces only the lines it owns; if a variable should be renamed, change the code or script and tell the user, instead of rewriting their file.
 
-Install portlease as a global tool, not as a project dependency: CI and Docker builds should neither install nor run it (a git/tarball dependency needs `git` or network where there is none; an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.1.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
+Install portlease as a global tool, not as a project dependency: CI and Docker builds should neither install nor run it (a git/tarball dependency needs `git` or network where there is none; an Alpine image re-resolves it during `pnpm deploy`), and CI does not lease ports. `npm i -g github:desclapez/portlease#v0.2.0` on each machine, and once per Node version under nvm (or list it in `$NVM_DIR/default-packages`).
 
 ### Ask the user (and recommend)
 
-- **Which env file should hold the leased ports?** Work this out yourself before asking, from what you know about the framework or tool that reads the port, then put one concrete recommendation and the alternatives to the user. Nothing about the choice is fixed: the file can be `.env`, `.env.local`, `.env.development.local`, `.env.test`, a custom name loaded with `--env-file`, at the repo root or inside an app, one shared file or one per app; an existing file may be updated (`claim` rewrites only the port lines it owns) or a new one added.
+- **Which env file should hold the leased ports?** Work this out yourself before asking, from what you know about the framework or tool that reads the port, then put one concrete recommendation and the alternatives to the user. Nothing about the choice is fixed: the file can be `.env`, `.env.local`, `.env.development.local`, `.env.test`, a custom name loaded with `--env-file`, at the repo root or inside an app, one shared file or one per app; an existing file may be updated (`claim` rewrites only the port lines it owns) or a new one added. Each answer becomes a section of `.portlease`; decide it per section.
 
   What to analyse:
   - **Which files each consumer actually loads, and which wins.** Vite and Next load `.env`, `.env.local` and mode-specific variants with the more specific ones overriding; plain `dotenv` loads only `.env`; Node `--env-file` loads exactly what it is given, in order; Playwright and Docker Compose have their own rules; some tools read the process environment only. A leased value written to a file that is overridden by another (`.env.development.local` over `.env.local`) or never loaded is silently ignored: check this.
@@ -144,7 +168,7 @@ Install portlease as a global tool, not as a project dependency: CI and Docker b
 - **Commit an `.env.example` per env file with the fixed values**, plus a small `sh` script that creates the real file from it when missing (from `postinstall` and as a manual script such as `pnpm setup:env`, documented in the README). The examples then become the single place that lists the default ports, and a fresh clone or worktree is runnable. Use `#!/bin/sh`, not bash: Alpine-based images have no bash, and a Dockerfile that installs before copying the sources needs the script copied first (or make the step manual).
 - **Remove the fixed ports from the code** (`process.env.PORT ?? 4001`) and fail with a message naming the missing variable and how to create the file. A silent fallback quietly sends a leased working copy back to the shared port. Do this only together with the example files, so a missing file is easy to fix.
 - **Make tools that hop to the next free port refuse to** (`strictPort` in Vite), so a collision is an error instead of two servers pointing at each other.
-- **One name per shared port**, when the same port is read under different names in different places, to keep the ports files simple.
+- **One name per shared port**, when the same port is read under different names in different places, to keep `.portlease` simple.
 
 ## Creating the setup and teardown scripts for worktrees and agents
 
@@ -168,10 +192,9 @@ done
 # 2. Install (if the project has .env.example files and a setup-env script, this also creates the env files).
 pnpm install
 
-# 3. Lease ports: one claim per ports file / env file pair (a single root file needs only one claim). This replaces the port lines, nothing else.
-portlease claim --ports apps/server/.ports --env apps/server/.env
-portlease claim --ports apps/web/.ports --env apps/web/.env
-portlease claim --ports e2e/.ports --env .env.e2e
+# 3. Lease ports for every env file listed in .portlease. This replaces the port lines, nothing else.
+#    It fails if a listed env file does not exist yet, so it must come after the steps that create them.
+portlease claim
 
 # 4. Project-specific preparation (code generation, migrations, ...)
 ```
@@ -183,7 +206,7 @@ portlease release
 ```
 
 Rules that keep these scripts correct:
-- Run `claim` after the install and after any copy of an env file, because both can bring fixed example ports back; `claim` then overwrites exactly the names in the ports files.
+- Run `claim` after the install and after any copy of an env file, because both can bring fixed example ports back; `claim` then overwrites exactly the names in `.portlease`. A missing env file now makes `claim` fail, so a wrong order shows up at once.
 - Never run them in the main checkout (it keeps the fixed ports), so guard with a check if the tool can run them there: `[ "$(git rev-parse --show-toplevel)" = "$main" ] && exit 0`.
 - `release` must not depend on anything inside the working copy that may already be gone; it is safe to run twice, and `portlease release --dir <path>` works for a path that no longer exists.
 - If the environment switches Node versions or the shell is not the user's login shell (agent terminals often are not), load the version manager and switch first, because global packages such as portlease live under one Node version.
@@ -197,6 +220,7 @@ After writing them, run the setup script in a throwaway worktree with a temporar
 
 ## Working with this tool
 
-- Check `portlease --help` and `portlease claim --dry-run` before changing a setup script: the dry run prints the ports it would assign and the env lines it would change or add.
+- Check `portlease --help` and `portlease claim --dry-run` before changing a setup script: the dry run prints the ports it would assign, the leases it would release, and the lines it would change or add in each env file.
+- On any port collision, run `portlease scan` before anything else (see "When a port collides").
 - Do not invent or hard-code ports for a worktree that is supposed to be leased; ask `portlease ls` or read the env file `claim` wrote.
-- Install (Node 22+): `npm i -g github:desclapez/portlease#v0.1.0`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").
+- Install: `npm i -g github:desclapez/portlease#v0.2.0`. With nvm, global packages are per Node version. Do not add it to a project's dependencies (see "Adding portlease to a repository").

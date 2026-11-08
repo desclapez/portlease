@@ -10,10 +10,13 @@ export async function leaseNames(options: {
   range: Range;
   isFree: (port: number) => Promise<boolean>;
   now: Date;
-}): Promise<{ registry: Registry; results: LeaseResult[] }> {
+}): Promise<{ registry: Registry; results: LeaseResult[]; released: Lease[] }> {
   const { dir, range, isFree } = options;
-  const leases: Lease[] = [...options.registry.leases];
-  const taken = new Set(leases.map((lease) => lease.port));
+  const isDropped = (lease: Lease) => lease.dir === dir && !options.names.includes(lease.name);
+  const released = options.registry.leases.filter(isDropped);
+  const leases: Lease[] = options.registry.leases.filter((lease) => !isDropped(lease));
+  // Released ports stay taken for this call, so a just-freed port never moves to another name in one step.
+  const taken = new Set(options.registry.leases.map((lease) => lease.port));
   let cursor = options.registry.cursor;
   const results: LeaseResult[] = [];
 
@@ -30,5 +33,5 @@ export async function leaseNames(options: {
     results.push({ name, port: allocation.port, reused: false });
   }
 
-  return { registry: { ...options.registry, cursor, leases }, results };
+  return { registry: { ...options.registry, cursor, leases }, results, released };
 }

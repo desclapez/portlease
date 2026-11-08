@@ -149,11 +149,14 @@ npm link           # put your checkout on PATH as `portlease`
 
 ### Releasing
 
-Bump the version in a PR (`npm version patch --no-git-tag-version`, or `minor`) and merge it. Then, from an up-to-date `main` with `nvm use` and `npm login` done:
+`main` is protected, so a release has two steps. Run both from an up-to-date `main`, with `nvm use` done and `npm login` for the second.
 
 ```bash
-npm run release -- --dry-run   # checks, tests and the package contents; publishes nothing
-npm run release                # publishes (npm asks for the 2FA code), waits for npm, tags `vX.Y.Z` and pushes the tag
+npm run release -- minor      # or patch / major: opens a PR that bumps the version (--dry-run shows the number)
+# merge that PR, then:
+git pull
+npm run release -- --dry-run  # checks, tests and package contents; publishes nothing
+npm run release               # publishes (npm asks for the 2FA code), waits for npm, tags `vX.Y.Z`, pushes the tag
 ```
 
 ## License

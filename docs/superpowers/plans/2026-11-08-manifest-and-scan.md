@@ -319,3 +319,8 @@
 - [ ] **Step 1:** Whole-branch review (superpowers:requesting-code-review), fix findings.
 - [ ] **Step 2:** `npm run typecheck && npm test` — all PASS.
 - [ ] **Step 3:** Ask the user before pushing and opening the PR. After the merge, the `v0.2.0` tag and the chargers follow-up (spec, "Follow-up in chargers") are separate steps the user starts.
+
+Only after the user says the PR is merged:
+
+- [ ] **Step 4: Tag the release.** `git fetch`; check that `origin/main` contains the merge and that its `package.json` says `0.2.0`. Create the annotated tag `v0.2.0` on that `origin/main` commit. Ask the user before `git push origin v0.2.0`.
+- [ ] **Step 5: Install it on this machine.** `npm i -g github:desclapez/portlease#v0.2.0` on nvm's default Node version, and on the `.nvmrc` version if it differs. Check that `portlease --help` shows `portlease claim [--dir <dir>] [--dry-run]` and `portlease scan`. If `$NVM_DIR/default-packages` has the `#v0.1.0` entry, propose changing it to `#v0.2.0` (do not change it without an ok). Then tell the user chargers can be adapted; that adaptation is done separately, in a chargers worktree, not here.

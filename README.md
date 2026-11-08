@@ -142,7 +142,7 @@ Leases are keyed on the directory's path. After renaming or moving a directory, 
 ## Development
 
 ```bash
-nvm use            # Node 24
+nvm use
 npm install        # also builds dist/
 npm test           # builds, then runs node:test on the TypeScript sources
 npm run typecheck
